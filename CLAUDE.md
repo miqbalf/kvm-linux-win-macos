@@ -11,5 +11,5 @@ Rules
 - Read docs/03-lessons-learned.md before changing the GPU or QEMU settings: three separate settings each broke GPU init.
 - NootRX (RDNA2 kext) README forbids use with AI: do not have an agent read its source; use the docs here instead.
 - Success criterion for a boot test is the guest answering ping AND an SSH banner (`nc <ip> 22`), never just "no panic string in the log". Do not add `serial=3` back for normal use (it caused boot panics).
-- Windows -> macOS on GPU 1 needs a host reboot (Windows leaves the GPU in a state macOS panics on). macOS -> Windows and macOS -> macOS worked without. vmctl enforces via /run/gpu1-last-guest.
+- Switch OS on GPU 1 with `vm-switch <macos|win10-gpu>` (runs `gpu1-reset 2`: remove, bus reset, rescan with autoprobe OFF). NEVER bind amdgpu to GPU 1 or reset it with raw setpci without removing it first: amdgpu bind crashed the host. vmctl blocks macOS after Windows until the GPU was reset.
 

@@ -1,0 +1,17 @@
+#!/bin/bash
+# vm-switch <macos|win10-gpu> [reset-level]: stop whichever guest owns GPU 1, reset the GPU, start the target. No host reboot.
+set -u
+TARGET="${1:-}"; LEVEL="${2:-2}"
+case "$TARGET" in macos|win10-gpu) ;; *) echo "usage: vm-switch {macos|win10-gpu} [reset-level 0|2|3, default 2]"; exit 1;; esac
+OTHER=win10-gpu; [ "$TARGET" = win10-gpu ] && OTHER=macos
+for vm in macos win10-gpu; do
+  [ "$vm" = "$TARGET" ] && [ "$(virsh domstate $vm)" = running ] && { echo "$TARGET already running"; exit 0; }
+done
+if [ "$(virsh domstate $OTHER)" = running ]; then
+  echo "stopping $OTHER..."
+  virsh shutdown "$OTHER" >/dev/null 2>&1
+  for i in $(seq 1 12); do sleep 5; [ "$(virsh domstate $OTHER)" = "shut off" ] && break; done
+  [ "$(virsh domstate $OTHER)" = "shut off" ] || { echo "$OTHER ignored shutdown, forcing"; virsh destroy "$OTHER" >/dev/null; sleep 3; }
+fi
+gpu1-reset "$LEVEL" || exit 1
+exec vmctl start "$TARGET"

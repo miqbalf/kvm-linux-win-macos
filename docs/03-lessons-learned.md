@@ -20,9 +20,14 @@ Other findings
 - Cause/fix: the kernel serial console (`serial=3` boot-arg) added for debugging. Removing it gave 27 of 27 clean boots.
 - Method lessons: (1) a test must prove the thing worked (ping + SSH banner), not only that a panic string is absent: three of my early loops reported false success because the VM never booted or the panic text did not match my grep; (2) check that a background job really is running before reporting it; (3) a debug option can itself be the bug.
 
-## Switching the GPU between Windows and macOS needs a host reboot
-- Observed: after win10-gpu ran with the GPU (Windows installed an AMD driver), macOS panicked on every start inside `AMDRadeonX6000_AmdPowerPlayHelper::powerUp` (3 of 3 tries, plus a manual secondary bus reset). A host reboot fixed it.
-- Why: Navi 22 has no function-level reset and vendor-reset does not support it. Linux can only bus-reset it, which does not clear what a guest driver left behind. A forced stop of a guest has the same effect.
-- Rule: Windows then macOS needs a host reboot. macOS then Windows booted fine in one test (not proven further); macOS then macOS is fine (27 boots). `vmctl` records the last guest in `/run/gpu1-last-guest` (cleared on reboot) and refuses macOS after Windows until you reboot (override: `FORCE=1`, expect a panic).
-- Tried and rejected: PCI remove + rescan in the libvirt hook (VM did not boot at all).
+## Switching the GPU between Windows and macOS without rebooting the host
+- Observed once: after win10-gpu had been force-stopped right after its first AMD driver install, macOS panicked at boot in `AMDRadeonX6000_AmdPowerPlayHelper::powerUp` (3 of 3 tries) until the host rebooted. Navi 22 has no function-level reset and `vendor-reset` does not support it, so Linux only has bus-level resets.
+- Not every Windows to macOS switch fails: a later plain stop+start (no reset) worked, so the failure depends on what the guest driver left in the card.
+- What works (3 of 3 cycles macOS to Windows to macOS, ~7 min each): `vm-switch` = stop guest, `gpu1-reset 2`, start target. Level 2 removes the card's PCI devices, pulses a secondary bus reset on the host root port with `setpci`, then rescans with `/sys/bus/pci/drivers_autoprobe` set to 0 so that no driver binds, and binds vfio-pci by hand.
+- What does NOT work or is dangerous:
+  - Raw `setpci` secondary bus reset on the card's own switch ports without removing the devices first: config space is not restored, the GPU reads 0xffff and QEMU fails with "Unknown PCI header type '127'".
+  - Letting `amdgpu` bind GPU 1 after a guest used it (as a "driver reset", or by a plain rescan when autoprobe is on): the whole host rebooted in testing (about 2 minutes of downtime for all docker services). Always rescan with autoprobe off.
+  - PCI remove and rescan in the libvirt hook at VM start: the guest did not boot at all.
+  - Writing `1` to `reset` of the card's upstream switch port: "Inappropriate ioctl for device".
+- Safety net: `vmctl` records the last guest (`/run/gpu1-last-guest`, cleared by `gpu1-reset`) and refuses macOS after Windows unless the GPU was reset. If macOS panics in powerUp anyway, reboot the host.
 - Serial console debugging: set `serial=3` in boot-args temporarily to read a panic, then remove it (it causes the early boot panic).

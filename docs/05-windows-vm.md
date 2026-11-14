@@ -11,11 +11,11 @@ Start / stop: `vmctl start win10-gpu`, `vmctl stop win10-gpu`. Connect: RDP to t
 Windows 10 LTSC support ends Jan 2027.
 
 ## How to run and check it
-1. `vmctl force-stop macos` if it is running (no reboot needed in testing)
+1. `vm-switch win10-gpu` (stops macOS if running, resets the GPU, starts Windows; no host reboot)
 2. `ssh root@<host> vmctl start win10-gpu`, find the guest address with `vmctl ip win10-gpu`.
 3. RDP to the guest through a Tailscale forwarder (`host/systemd/rdp-win10.service.template`: set `${TAILSCALE_IP}`; target is the win10-gpu guest address, port 3389), or use the console on VNC port 5903 over an SSH tunnel.
 4. In Windows open Device Manager, Display adapters: expect "AMD Radeon RX 6700 XT". If it shows a generic adapter or error 43, install the AMD Adrenalin driver and reboot.
-5. Back to macOS: `vmctl stop win10-gpu`, then **reboot the host**, then `vmctl start macos`.
+5. Back to macOS: `vm-switch macos`.
 
 Offline evidence (Windows disk read-only after a clean shutdown): Windows enumerated PCI\VEN_1002&DEV_73DF and staged an AMD display driver from Windows Update (u0420529.inf, signature OK). Install completion was cut off by my shutdown.
 Second run (after a host reboot, 8 min uptime, clean ACPI shutdown, disk read offline afterwards):

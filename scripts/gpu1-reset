@@ -1,0 +1,54 @@
+#!/bin/bash
+# gpu1-reset [level]: reset GPU 1 (RX 6700 XT behind its own PCIe switch) between guests, without rebooting the host.
+# Run only while no VM is using GPU 1.
+#   level 1 (does not work on this host: writing the reset file fails; kept for reference): kernel-managed secondary bus reset of the card's upstream switch port (10:00.0); the kernel saves and
+#            restores PCI config of everything below (raw setpci SBR does NOT restore it: GPU then reads 0xffff)
+#   level 3 (untested): same, but on the host root port (00:01.1): resets the whole card including its switch
+#   level 2: remove the card's PCI devices, bus reset the host root port with raw setpci, rescan with driver autoprobe
+#            DISABLED so amdgpu never binds, then bind vfio-pci by hand. NEVER let amdgpu bind GPU 1 after a guest used it:
+#            that crashed the whole host (reboot) in testing.
+# Addresses are for this host; adjust GPU, SW_UP, SW_DOWN, ROOT with `lspci -tv`.
+set -u
+LEVEL="${1:-2}"
+GPU=0000:12:00.0; AUDIO=0000:12:00.1; SW_DOWN=0000:11:00.0; SW_UP=0000:10:00.0; ROOT=0000:00:01.1
+for vm in macos win10-gpu; do
+  [ "$(virsh domstate $vm 2>/dev/null)" = running ] && { echo "refusing: $vm is running"; exit 1; }
+done
+sbr() {  # sbr <bdf>: pulse Secondary Bus Reset in the bridge control register
+  local b; b=$(setpci -s "${1#0000:}" BRIDGE_CONTROL)
+  setpci -s "${1#0000:}" BRIDGE_CONTROL=$(printf '%04x' $((0x$b | 0x40)))
+  sleep 0.3
+  setpci -s "${1#0000:}" BRIDGE_CONTROL=$b
+  sleep 1.5
+}
+kreset() {  # kreset <bdf>: kernel secondary bus reset of that bridge, with config save/restore of the devices below
+  echo bus > /sys/bus/pci/devices/$1/reset_method 2>/dev/null
+  echo 1 > /sys/bus/pci/devices/$1/reset || echo "warn: reset of $1 failed"
+  sleep 3
+}
+case "$LEVEL" in
+  0) ;;
+  1) echo on > /sys/bus/pci/devices/$GPU/power/control 2>/dev/null; kreset $SW_UP ;;
+  3) echo on > /sys/bus/pci/devices/$GPU/power/control 2>/dev/null; kreset $ROOT ;;
+  2) for d in $AUDIO $GPU $SW_DOWN $SW_UP; do echo 1 > /sys/bus/pci/devices/$d/remove 2>/dev/null; done
+     sleep 1
+     sbr $ROOT
+     sleep 2
+     echo 0 > /sys/bus/pci/drivers_autoprobe
+     echo 1 > /sys/bus/pci/rescan
+     for i in $(seq 1 20); do [ -e /sys/bus/pci/devices/$GPU ] && break; sleep 1; done
+     sleep 3
+     for d in $GPU $AUDIO; do echo vfio-pci > /sys/bus/pci/devices/$d/driver_override; done
+     echo 1 > /sys/bus/pci/drivers_autoprobe ;;
+  *) echo "usage: gpu1-reset [0|2|3]"; exit 2 ;;
+esac
+drv=$(basename "$(readlink /sys/bus/pci/devices/$GPU/driver 2>/dev/null)" 2>/dev/null)
+if [ "$drv" != vfio-pci ]; then
+  for d in $GPU $AUDIO; do [ -e /sys/bus/pci/devices/$d/driver ] && echo $d > /sys/bus/pci/devices/$d/driver/unbind 2>/dev/null; done
+  echo vfio-pci > /sys/bus/pci/devices/$GPU/driver_override; echo vfio-pci > /sys/bus/pci/devices/$AUDIO/driver_override
+  echo $GPU > /sys/bus/pci/drivers_probe; echo $AUDIO > /sys/bus/pci/drivers_probe
+fi
+drv=$(basename "$(readlink /sys/bus/pci/devices/$GPU/driver 2>/dev/null)" 2>/dev/null)
+[ "$drv" = vfio-pci ] || { echo "FAILED: GPU not bound to vfio-pci after reset (driver='$drv')"; exit 1; }
+rm -f /run/gpu1-last-guest
+echo "gpu1-reset level $LEVEL done, GPU on vfio-pci"
