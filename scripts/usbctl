@@ -1,0 +1,16 @@
+#!/bin/bash
+# usbctl list | attach <vm> <vid:pid> | detach <vm> <vid:pid>: hot-plug a USB device from the host into a running VM.
+# The host loses the device while it is attached. Do not attach your keyboard/mouse. Not tested on a storage stick
+# yet (none was plugged in when written); the libvirt mechanism is standard.
+set -eu
+cmd="${1:-}"; vm="${2:-}"; id="${3:-}"
+xml() { v=${id%%:*}; p=${id##*:}
+  echo "<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id='0x$v'/><product id='0x$p'/></source></hostdev>"; }
+case "$cmd" in
+  list)   lsusb ;;
+  attach) [ -n "$vm" ] && [ -n "$id" ] || { echo "usage: usbctl attach <vm> <vid:pid>"; exit 1; }
+          xml > /tmp/usbctl.xml; virsh attach-device "$vm" /tmp/usbctl.xml --live ;;
+  detach) [ -n "$vm" ] && [ -n "$id" ] || { echo "usage: usbctl detach <vm> <vid:pid>"; exit 1; }
+          xml > /tmp/usbctl.xml; virsh detach-device "$vm" /tmp/usbctl.xml --live ;;
+  *) echo "usage: usbctl {list|attach <vm> <vid:pid>|detach <vm> <vid:pid>}"; exit 1 ;;
+esac

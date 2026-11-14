@@ -20,6 +20,7 @@ ssh root@<host> vmctl status               # what is running, guest IP
 ssh root@<host> vmctl force-stop macos     # pull the plug (macOS ignores ACPI shutdown)
 ssh root@<host> vmctl start macos          # start without switching (refuses macOS right after Windows)
 ```
+Disk share: `smb://<host>/DATA_HDD` from your Mac, `smb://192.168.122.1/DATA_HDD` inside the VMs (docs/07). USB: `ssh root@<host> usbctl attach <vm> <vid:pid>`.
 RDP is for Windows (port 3389), Screen Sharing/VNC is for macOS (port 5900). Error 0x204 in the RDP client usually means the Windows VM is not running.
 
 | Doc | What |
@@ -31,6 +32,7 @@ RDP is for Windows (port 3389), Screen Sharing/VNC is for macOS (port 5900). Err
 | docs/04-operations.md | Start, stop, connect, add a VM |
 | docs/05-windows-vm.md | Windows VM and GPU passthrough |
 | docs/06-troubleshooting.md | Symptom to fix table |
+| docs/07-storage-and-usb.md | Share an internal disk with all VMs over SMB; USB passthrough |
 | host/, vm/, scripts/ | The actual files |
 
 Placeholders: `${TAILSCALE_IP}`, `<host>` (host Tailscale name). Replace with your own. Never commit real IPs, VNC passwords or OpenCore serials.

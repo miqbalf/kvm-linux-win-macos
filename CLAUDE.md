@@ -13,3 +13,4 @@ Rules
 - Success criterion for a boot test is the guest answering ping AND an SSH banner (`nc <ip> 22`), never just "no panic string in the log". Do not add `serial=3` back for normal use (it caused boot panics).
 - Switch OS on GPU 1 with `vm-switch <macos|win10-gpu>` (runs `gpu1-reset 2`: remove, bus reset, rescan with autoprobe OFF). NEVER bind amdgpu to GPU 1 or reset it with raw setpci without removing it first: amdgpu bind crashed the host. vmctl blocks macOS after Windows until the GPU was reset.
 
+- Storage: share a plain data disk to the VMs over SMB (docs/07), never attach one raw disk to two guests, never share the disk holding VM images or Docker data (SSD_DATA). SMB must stay on virbr0 + Tailscale only. USB: scripts/usbctl, untested on storage sticks.

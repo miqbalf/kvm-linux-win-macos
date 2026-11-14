@@ -15,5 +15,6 @@
 | no `serial=3`, NootRX, NIC built-in property | OpenCore image `opencore-vm.img` (back it up before edits) | yes |
 | DHCP reservation, port forwards | libvirt `default` network, `vnc-macos.service`, `rdp-win10*.service` | yes |
 | boot retry, Windows-then-macOS guard | `/usr/local/sbin/vmctl`, marker `/run/gpu1-last-guest` | script yes, marker no (by design) |
+| Disk share (fstab mount, Samba, `smb-tailscale.service`, ufw 445) | `/etc/fstab`, `/etc/samba/smb.conf`, systemd, ufw (see docs/07) | yes |
 | GPU left dirty by Windows | nothing can store this | no: reboot the host |
 Verify quickly: `vmctl status`, `systemctl is-active vfio-gpu1 vnc-macos libvirtd`, `virsh dumpxml macos | grep -E "maxphysaddr|hotplug=off|<rom"`.

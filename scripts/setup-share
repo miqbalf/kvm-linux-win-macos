@@ -1,0 +1,30 @@
+#!/bin/bash
+# setup-share <partition> [share-name]: share an internal disk partition with every VM and your own devices over SMB.
+# Example: setup-share /dev/sdb2 DATA_HDD      (run as root on the host; needs Tailscale up)
+# Mirrors the steps used on the reference host. Review before running: it edits /etc/fstab and /etc/samba/smb.conf
+# (backups: /root/fstab.bak, /root/smb.conf.orig). NTFS is mounted with ntfs3; never share a disk a VM also owns.
+set -euo pipefail
+DEV="${1:?usage: setup-share /dev/sdXN [share-name]}"; NAME="${2:-DATA_HDD}"; MNT="/mnt/$NAME"
+TS=$(tailscale ip -4 | head -1)
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y -qq samba smbclient socat
+systemctl disable --now nmbd >/dev/null 2>&1 || true
+id vmshare >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin vmshare
+UIDV=$(id -u vmshare); GIDV=$(id -g vmshare); UUID=$(blkid -s UUID -o value "$DEV"); FST=$(blkid -s TYPE -o value "$DEV")
+[ "$FST" = ntfs ] && FST=ntfs3
+mkdir -p "$MNT"; cp -n /etc/fstab /root/fstab.bak
+grep -q "$MNT" /etc/fstab || echo "UUID=$UUID $MNT $FST rw,uid=$UIDV,gid=$GIDV,umask=007,nofail,x-systemd.device-timeout=10 0 0" >> /etc/fstab
+systemctl daemon-reload; mountpoint -q "$MNT" || mount "$MNT"
+if [ ! -f /root/.vmshare-smb-password ]; then
+  PW=$(openssl rand -base64 18 | tr -d '=+/' | cut -c1-20)
+  printf '%s\n%s\n' "$PW" "$PW" | smbpasswd -s -a vmshare >/dev/null
+  echo "$PW" > /root/.vmshare-smb-password; chmod 600 /root/.vmshare-smb-password
+fi
+cp -n /etc/samba/smb.conf /root/smb.conf.orig
+sed "s#/mnt/DATA_HDD#$MNT#; s#^\[DATA_HDD\]#[$NAME]#" "$(dirname "$0")/../host/samba/smb.conf.template" > /etc/samba/smb.conf
+testparm -s >/dev/null
+systemctl enable --now smbd; systemctl restart smbd
+sed "s/\${TAILSCALE_IP}/$TS/" "$(dirname "$0")/../host/systemd/smb-tailscale.service.template" > /etc/systemd/system/smb-tailscale.service
+systemctl daemon-reload; systemctl enable --now smb-tailscale
+ufw allow in on tailscale0 to any port 445 proto tcp comment "smb over tailscale"
+echo "done. Password: cat /root/.vmshare-smb-password   Share: smb://<host>/$NAME  (VMs: smb://192.168.122.1/$NAME)"
