@@ -1,0 +1,14 @@
+#!/bin/bash
+# libvirt hook: before macos/win10 VMs start, shrink GPU 1 BAR0/BAR2 to 256MB (macOS cannot map the 16GB ReBAR layout).
+GUEST="$1"; OP="$2"; SUB="$3"
+case "$GUEST" in macos) ;; *) exit 0;; esac
+if [ "$OP" = prepare ] && [ "$SUB" = begin ]; then
+  D=/sys/bus/pci/devices/0000:12:00.0
+  cur=$(basename "$(readlink $D/driver 2>/dev/null)" 2>/dev/null)
+  [ -n "$cur" ] && echo 0000:12:00.0 > $D/driver/unbind
+  echo 8 > $D/resource0_resize 2>/dev/null
+  echo 8 > $D/resource2_resize 2>/dev/null
+  echo vfio-pci > $D/driver_override
+  echo 0000:12:00.0 > /sys/bus/pci/drivers_probe
+fi
+exit 0

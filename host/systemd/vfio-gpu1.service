@@ -1,0 +1,12 @@
+[Unit]
+Description=Bind GPU 1 (12:00.x) to vfio-pci for VMs
+After=systemd-modules-load.service
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vfio-gpu1-bind
+
+[Install]
+WantedBy=multi-user.target

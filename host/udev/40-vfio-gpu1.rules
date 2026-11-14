@@ -1,0 +1,2 @@
+# GPU #1 (12:00.0 VGA, 12:00.1 audio) reserved for VMs: amdgpu/snd_hda must not claim it.
+ACTION=="add", SUBSYSTEM=="pci", KERNEL=="0000:12:00.[01]", ATTR{driver_override}="vfio-pci"

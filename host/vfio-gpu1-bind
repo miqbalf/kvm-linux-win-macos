@@ -1,0 +1,12 @@
+#!/bin/bash
+# Fallback: bind GPU #1 to vfio-pci if udev rule did not catch it. Retries while amdgpu probes.
+modprobe vfio-pci
+for d in 0000:12:00.0 0000:12:00.1; do
+  echo vfio-pci > /sys/bus/pci/devices/$d/driver_override
+  for i in $(seq 1 20); do
+    cur=$(basename "$(readlink /sys/bus/pci/devices/$d/driver 2>/dev/null)" 2>/dev/null)
+    [ "$cur" = vfio-pci ] && break
+    if [ -n "$cur" ]; then echo $d > /sys/bus/pci/devices/$d/driver/unbind 2>/dev/null || { sleep 2; continue; }; fi
+    echo $d > /sys/bus/pci/drivers_probe 2>/dev/null
+  done
+done

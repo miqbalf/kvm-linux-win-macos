@@ -1,0 +1,11 @@
+[Unit]
+Description=Forward Tailscale :5900 to macOS VM Screen Sharing
+After=network-online.target tailscaled.service libvirtd.service
+
+[Service]
+ExecStart=/usr/bin/socat TCP-LISTEN:5900,bind=${TAILSCALE_IP},reuseaddr,fork TCP:192.168.122.135:5900
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
