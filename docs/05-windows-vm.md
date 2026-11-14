@@ -25,4 +25,21 @@ Second run (after a host reboot, 8 min uptime, clean ACPI shutdown, disk read of
 
 How to read a Windows guest offline from the host (guest must be shut off): `L=$(losetup -rfP --show /dev/<windisk>); mount -t ntfs3 -o ro ${L}p3 /mnt/winro`, then look at `Windows/INF/setupapi.dev.log` and `strings -el Windows/System32/config/SYSTEM`. Never read it while the guest runs: the data is stale.
 
+## In-guest confirmation (2026-11-14)
+Read from inside the running guest by a startup script (method below), `pnputil /enum-devices /class Display`:
+```
+Device Description: AMD Radeon RX 6700 XT
+Manufacturer Name:  Advanced Micro Devices, Inc.
+Status:             Started
+Driver Name:        oem16.inf
+```
+The Windows GPU passthrough works: both functions are passed, Windows installed the AMD driver from Windows Update, and the card is started without errors (no Code 43).
+
+### Run a command in a Windows guest with no login (no RDP, no password)
+With the guest shut off, mount its disk on the host (`losetup -fP --show /dev/<windisk>; mount -t ntfs3 -o rw <loop>p3 /mnt/winro`), add a local-policy machine startup script, boot, wait, shut down, read the output file offline, then delete the helper files:
+- `Windows/System32/GroupPolicy/gpt.ini`: `[General]`, `gPCMachineExtensionNames=[{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{40B6664F-4972-11D1-A7CA-0000F87571E3}]`, `Version=1` (CRLF)
+- `Windows/System32/GroupPolicy/Machine/Scripts/scripts.ini`: `[Startup]`, `0CmdLine=check.cmd`, `0Parameters=` (CRLF), plus an empty `psscripts.ini`
+- `Windows/System32/GroupPolicy/Machine/Scripts/Startup/check.cmd`: for example `pnputil /enum-devices /class Display > C:\out.txt`
+Output is ANSI text; read it with `tr -d '\r\000'`. Works while the NTFS volume is clean enough for ntfs3 to mount read-write.
+
 Status: boots, GPU functions attach, resets clean. Driver installed and bound (see above); the live Device Manager state is the only part not seen.
