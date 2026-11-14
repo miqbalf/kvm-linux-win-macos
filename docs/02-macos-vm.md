@@ -20,3 +20,8 @@ Final fix: removing `serial=3` from the OpenCore boot-args. With it, the kernel 
 Cost: no kernel serial log. Use the SSH/VNC checks above, or re-add `serial=3` temporarily to debug a panic.
 
 Editing OpenCore boot-args in the VM-only image (VM stopped): `mount -o loop,offset=$((2048*512)) opencore-vm.img /mnt/ocv`, edit `/mnt/ocv/EFI/OC/config.plist` (key `boot-args`), `umount /mnt/ocv`. Keep a backup copy of the image first. The OpenCore config is not in this repo because it holds SMBIOS serials.
+
+## Emulated VGA: with or without
+- With `<video><model type='vga'/>`: you get a VNC console on the host (handy for debugging), but macOS treats the emulated VGA as the display GPU, so Screen Sharing and About This Mac show "VRAM 3 MB, 1280x800".
+- With `<video><model type='none'/>` (current `vm/macos/macos.xml`): the Radeon is the only GPU, About This Mac shows the 12 GB Radeon, and Screen Sharing runs on it. No host VNC console: if macOS will not boot, define the VGA variant again (`<video><model type='vga' vram='16384'/></video>`) to see the screen, then switch back.
+- Keep the real VBIOS attached to the GPU hostdev (`/usr/share/qemu/gpu1-vbios.rom`).
