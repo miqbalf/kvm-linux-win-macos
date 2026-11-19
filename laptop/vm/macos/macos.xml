@@ -1,0 +1,59 @@
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+  <name>macos</name>
+  <uuid>77c1f6e2-3b2a-4c4e-9a1f-2d8b6a5c9d01</uuid>
+  <memory unit='GiB'>12</memory>
+  <currentMemory unit='GiB'>12</currentMemory>
+  <vcpu placement="static">6</vcpu>
+  <cputune><shares>10000</shares></cputune>
+  <os firmware='efi'>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <!-- Arch/CachyOS paths: adjust if the distro differs -->
+    <loader readonly='yes' type='pflash'>/usr/share/edk2/x64/OVMF_CODE.4m.fd</loader>
+    <nvram template='/usr/share/edk2/x64/OVMF_VARS.4m.fd'>/var/lib/libvirt/qemu/nvram/macos_VARS.fd</nvram>
+  </os>
+  <features><acpi/><apic/><vmport state='off'/><ioapic driver='kvm'/></features>
+  <cpu mode='host-passthrough' check='none' migratable='off'>
+    <topology sockets="1" dies="1" cores="3" threads="2"/>
+    <cache mode="passthrough"/>
+    <feature policy="require" name="invtsc"/>
+  </cpu>
+  <clock offset='utc'><timer name='rtc' tickpolicy='catchup'/><timer name='pit' tickpolicy='delay'/><timer name='hpet' present='yes'/></clock>
+  <on_poweroff>destroy</on_poweroff><on_reboot>restart</on_reboot><on_crash>destroy</on_crash>
+  <devices>
+    <serial type='file'><source path='/var/lib/libvirt/qemu/macos-serial.log'/><target type='isa-serial' port='0'/></serial>
+    <!-- VM-only OpenCore (copy of the Hackintosh EFI, VM-adjusted). Never the real EFI. -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source file='/var/lib/libvirt/images/macos/opencore-lt.img'/>
+      <target dev='sda' bus='sata'/>
+      <boot order='1'/>
+    </disk>
+    <!-- Real Hackintosh disk (Samsung 980, /dev/hackintosh-disk) through a copy-on-write overlay.
+         NEVER attach the disk directly and never boot the Hackintosh natively while the
+         overlay exists: a native boot changes the backing disk and invalidates the overlay
+         (recreate with: qemu-img create -f qcow2 -b /dev/hackintosh-disk -F raw overlay.qcow2). -->
+    <disk type="file" device="disk"><driver name="qemu" type="qcow2" cache='none'/><source file="/var/lib/libvirt/images/macos/nvme1-overlay.qcow2"/><backingStore type="block"><format type="raw"/><source dev="/dev/hackintosh-disk"/></backingStore><target dev="sdb" bus="sata"/></disk>
+    <!-- vmxnet3 + built-in=01 DeviceProperty in the VM OpenCore config (desktop lesson) -->
+    <interface type='network'>
+      <mac address='52:54:00:aa:bb:61'/>
+      <source network='default'/>
+      <model type='vmxnet3'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x04' function='0x0'/>
+    </interface>
+    <controller type='usb' model='qemu-xhci'/>
+    <input type='tablet' bus='usb'/>
+    <input type='keyboard' bus='usb'/>
+    <graphics type='vnc' port='5902' autoport='no' listen='127.0.0.1' passwd='CHANGE_ME'><listen type='address' address='127.0.0.1'/></graphics>
+    <!-- Emulated VGA is the ONLY display (no GPU passthrough on the laptop): keep it. -->
+    <video><model type='vga' vram='16384'/></video>
+    <memballoon model='none'/>
+  </devices>
+  <qemu:commandline>
+    <qemu:arg value='-device'/>
+    <qemu:arg value='isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc'/>
+    <qemu:arg value='-global'/>
+    <qemu:arg value='ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off'/>
+    <qemu:arg value='-global'/>
+    <qemu:arg value='pcie-root-port.hotplug=off'/>
+  </qemu:commandline>
+</domain>

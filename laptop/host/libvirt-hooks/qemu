@@ -1,0 +1,23 @@
+#!/bin/bash
+# /etc/libvirt/hooks/qemu (laptop) - keep the laptop awake while any VM runs.
+# GNOME suspends after 15 min idle on battery; a suspended host looks like a hang over SSH
+# and freezes the guests. A logind inhibitor per running VM blocks idle suspend; it is removed
+# when the VM stops, so normal sleep comes back. Closing the lid still suspends
+# (logind LidSwitchIgnoreInhibited=yes).
+# Must not call virsh (libvirt deadlock) and must return quickly.
+vm="$1"; op="$2"
+unit="vm-inhibit-${vm//[^A-Za-z0-9_-]/_}"
+case "$op" in
+  started)
+    systemd-run --quiet --unit="$unit" --collect \
+      systemd-inhibit --what=idle:sleep --who=libvirt \
+        --why="VM $vm running" --mode=block sleep infinity || true ;;
+  release)
+    systemctl stop "$unit" 2>/dev/null || true
+    # macOS on the iGPU stopped (Apple menu > Shut Down, crash, virsh destroy): give the laptop
+    # panel back to the host. Detached, because gpu-mode calls virsh.
+    if [ "$vm" = macos-igpu ] && [ "$(basename "$(readlink /sys/bus/pci/devices/0000:00:02.0/driver)")" = vfio-pci ]; then
+      systemd-run --quiet --collect --unit=gpu-mode-autohost --on-active=2 /usr/local/sbin/gpu-mode host || true
+    fi ;;
+esac
+exit 0

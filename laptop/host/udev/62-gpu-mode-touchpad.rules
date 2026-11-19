@@ -1,0 +1,2 @@
+# Stable name for the uinput mouse created by touchpad-bridge (macos-igpu takes it over evdev).
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="gpu-mode touchpad bridge", SYMLINK+="input/gpu-mode-touchpad"

@@ -1,0 +1,2 @@
+# Kimi scripts that bound the GTX 1650 to vfio-pci at boot and hand-edited limine.conf.
+# They blacked out the display on 2026-11-19. Kept for reference only. Do NOT run.

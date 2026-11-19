@@ -1,0 +1,156 @@
+#!/bin/bash
+# gpu-mode - switch the laptop's Intel iGPU (00:02.0) between the host and the macOS VM.
+#   sudo gpu-mode mac      stop GDM, bind iGPU to vfio-pci, start macos-igpu (macOS on the laptop panel)
+#   sudo gpu-mode host     stop macos-igpu, give the iGPU back to i915, start GDM
+#   sudo gpu-mode status
+#   Apple menu > Shut Down in macOS also returns to the host (libvirt hook + watchdog).
+# Runs only on request. Nothing here is persistent: a reboot always returns to host mode.
+# In mac mode the host has no display (the panel is wired to the iGPU; the GTX 1650 only drives
+# the HDMI port). Manage the host over SSH. Keyboard/touchpad: both Ctrl keys toggle host/guest.
+# If `host` cannot rebind i915 (iGPU left in a bad state by the guest), reboot the laptop.
+set -uo pipefail
+# Never die halfway through a switch because the caller closed stdout (e.g. `gpu-mode host | head -1`).
+trap '' PIPE
+IGPU=0000:00:02.0
+VM=macos-igpu
+GUEST_IP=192.168.122.11
+DEV=/sys/bus/pci/devices/$IGPU
+
+log() { echo "[gpu-mode] $*"; logger -t gpu-mode "$*" 2>/dev/null || true; }
+die() { log "ERROR: $*"; exit 1; }
+drv() { local l; l=$(readlink "$DEV/driver" 2>/dev/null) && basename "$l" || echo none; }
+state() { virsh domstate "$1" 2>/dev/null || echo "undefined"; }
+BL=/sys/class/backlight/intel_backlight
+save_bl() { cat "$BL/brightness" > /run/gpu-mode-brightness 2>/dev/null || true; }
+# After the guest had the iGPU, i915 comes back with backlight 0 (screen looks black). Restore it.
+restore_bl() {
+  local b; b=$(cat /run/gpu-mode-brightness 2>/dev/null || echo 0)
+  [ "${b:-0}" -gt 0 ] 2>/dev/null || b=$(( $(cat "$BL/max_brightness") * 6 / 10 ))
+  for i in 1 2 3 4 5; do [ -w "$BL/brightness" ] && echo "$b" > "$BL/brightness" && break; sleep 1; done
+}
+TP_UNIT=gpu-mode-touchpad
+TP_DEV=/dev/input/gpu-mode-touchpad
+# Touchpad -> virtual mouse with tap-to-click for the VM (host/touchpad-bridge).
+tp_start() {
+  systemctl is-active -q $TP_UNIT && return 0
+  systemctl reset-failed $TP_UNIT 2>/dev/null
+  systemd-run -q --unit=$TP_UNIT /usr/local/sbin/touchpad-bridge || return 1
+  for i in $(seq 1 10); do [ -e $TP_DEV ] && return 0; sleep 0.5; done
+  return 1
+}
+tp_stop() { systemctl stop $TP_UNIT 2>/dev/null; true; }
+
+# macOS on the iGPU never powers the VM off after Apple menu > Shut Down: all vCPUs spin on one
+# kernel address (2026-11-19). Watchdog: once macOS was up, if it stops answering ping and CPU 0
+# sits on the same RIP, not halted, for 20 s, force the VM off. The libvirt hook then runs
+# `gpu-mode host`. A normal reboot changes RIP and an idle/sleeping guest is halted (HLT=1).
+WD_UNIT=gpu-mode-watchdog
+rip() { virsh qemu-monitor-command --hmp "$VM" "info registers" 2>/dev/null | grep -oE 'RIP=[0-9a-f]+|HLT=[01]' | tr '\n' ' '; }
+watchdog() {
+  local seen=0 last="" same=0 r
+  while [ "$(state $VM)" = running ]; do
+    sleep 5
+    if ping -c1 -W1 "$GUEST_IP" >/dev/null 2>&1; then seen=1; same=0; last=""; continue; fi
+    [ $seen = 1 ] || continue
+    r=$(rip)
+    if [ -n "$r" ] && [ "$r" = "$last" ] && [[ "$r" == *HLT=0* ]]; then same=$((same + 1)); else same=0; fi
+    last=$r
+    if [ $same -ge 4 ]; then
+      log "watchdog: macOS stuck after shutdown ($r), forcing $VM off"
+      virsh destroy "$VM" >/dev/null; return 0
+    fi
+  done
+}
+wd_start() { systemctl reset-failed $WD_UNIT 2>/dev/null; systemd-run -q --unit=$WD_UNIT /usr/local/sbin/gpu-mode watchdog || true; }
+wd_stop() { systemctl stop $WD_UNIT 2>/dev/null; true; }
+vtcon() { for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" "$v/name" 2>/dev/null && echo "$1" > "$v/bind" 2>/dev/null; done; true; }
+
+[ "$(id -u)" = 0 ] || die "run with sudo"
+# One switch at a time (the libvirt hook also runs `gpu-mode host` when macos-igpu stops).
+[ "${1:-}" = watchdog ] && { watchdog; exit 0; }
+exec 9>/run/gpu-mode.lock
+flock -w 300 9 || die "another gpu-mode is still running"
+
+status() {
+  echo "iGPU $IGPU driver: $(drv)"
+  echo "gdm: $(systemctl is-active gdm)"
+  for d in macos macos-igpu win10; do echo "VM $d: $(state $d)"; done
+}
+
+to_mac() {
+  [ "$(state $VM)" = "running" ] && { log "$VM already running"; status; return 0; }
+  [ -d /sys/kernel/iommu_groups/0 ] || die "IOMMU off (need intel_iommu=on on the kernel cmdline)"
+  [ "$(state macos)" = "shut off" ] || die "domain 'macos' is running: it shares the disk overlay, shut it down first"
+  [ "$(state $VM)" = "shut off" ] || die "$VM is $(state $VM)"
+  [ -f /var/lib/libvirt/images/macos/opencore-igpu.img ] || die "opencore-igpu.img missing"
+  # NVMe numbering swaps between boots: the overlay must sit on the Samsung, never on the host disk.
+  [ "$(lsblk -dno MODEL /dev/hackintosh-disk 2>/dev/null)" = "Samsung SSD 980 1TB" ] || die "/dev/hackintosh-disk is not the Samsung 980"
+  qemu-img info /var/lib/libvirt/images/macos/nvme1-overlay.qcow2 2>/dev/null | grep -q 'backing file: /dev/hackintosh-disk' || die "overlay is not backed by /dev/hackintosh-disk"
+
+  save_bl
+  log "stopping GDM (host desktop closes)"
+  systemctl stop gdm
+  for i in $(seq 1 20); do
+    card=$(ls -d "$DEV"/drm/card* 2>/dev/null | head -1)
+    [ -z "$card" ] && break
+    fuser -s "/dev/dri/$(basename "$card")" 2>/dev/null || break
+    sleep 1
+  done
+  vtcon 0
+
+  if [ "$(drv)" = i915 ]; then
+    log "unbinding i915"
+    timeout 30 sh -c "echo $IGPU > /sys/bus/pci/drivers/i915/unbind" || { to_host_hw; die "i915 unbind failed/hung"; }
+  fi
+  modprobe vfio-pci
+  echo vfio-pci > "$DEV/driver_override"
+  echo "$IGPU" > /sys/bus/pci/drivers_probe 2>/dev/null
+  [ "$(drv)" = vfio-pci ] || { to_host_hw; die "iGPU did not bind to vfio-pci (driver: $(drv))"; }
+  tp_start || { to_host_hw; die "touchpad bridge did not start ($TP_DEV missing)"; }
+  log "iGPU on vfio-pci, starting $VM"
+
+  if ! virsh start "$VM"; then to_host_hw; die "virsh start failed, host restored"; fi
+  wd_start
+  for i in $(seq 1 36); do
+    sleep 5
+    [ "$(state $VM)" = running ] || { to_host_hw; die "$VM stopped during boot, host restored"; }
+    ping -c1 -W1 "$GUEST_IP" >/dev/null 2>&1 && { log "macOS up at $GUEST_IP after $((i*5))s"; return 0; }
+  done
+  log "WARN: no ping from macOS after 180s; it may still be booting. Check: sudo gpu-mode status, serial log /var/lib/libvirt/qemu/$VM-serial.log. Back to host: sudo gpu-mode host"
+}
+
+to_host_hw() {
+  tp_stop
+  wd_stop
+  echo > "$DEV/driver_override"
+  if [ "$(drv)" = vfio-pci ]; then echo "$IGPU" > /sys/bus/pci/drivers/vfio-pci/unbind; fi
+  if [ "$(drv)" = none ]; then timeout 60 sh -c "echo $IGPU > /sys/bus/pci/drivers_probe" 2>/dev/null; fi
+  vtcon 1
+  if [ "$(drv)" = i915 ]; then
+    restore_bl
+    systemctl start gdm
+    sleep 3; restore_bl
+    log "host mode: iGPU on i915, backlight $(cat $BL/brightness), GDM started"
+  else
+    log "WARN: iGPU driver is '$(drv)', not i915. Reboot the laptop to get the display back."
+  fi
+}
+
+to_host() {
+  if [ "$(state $VM)" = running ]; then
+    log "shutting down $VM"
+    # macOS answers the ACPI power button only with a dialog, and a real Shut Down hangs at the
+    # end anyway (see watchdog): give it 30 s, then force off. Save work in macOS before switching.
+    virsh shutdown "$VM" >/dev/null
+    for i in $(seq 1 6); do [ "$(state $VM)" = "shut off" ] && break; sleep 5; done
+    [ "$(state $VM)" = "shut off" ] || { log "forcing off"; virsh destroy "$VM" >/dev/null; }
+  fi
+  to_host_hw
+}
+
+case "${1:-status}" in
+  mac) to_mac; status ;;
+  host) to_host; status ;;
+  status) status ;;
+  *) echo "usage: gpu-mode mac|host|status"; exit 2 ;;
+esac

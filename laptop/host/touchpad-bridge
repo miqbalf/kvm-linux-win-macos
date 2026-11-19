@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""touchpad-bridge - laptop touchpad -> virtual relative mouse for the macOS iGPU VM.
+
+In mac mode GDM/libinput are stopped, so the raw touchpad has no tap-to-click, no acceleration and
+reports absolute positions (QEMU then jumps the pointer to the finger). This bridge reads the
+touchpad and creates a uinput mouse ("gpu-mode touchpad bridge", udev symlink
+/dev/input/gpu-mode-touchpad) that the VM takes over evdev:
+  1 finger move = pointer (with acceleration)   1 finger tap = left click   2 finger tap = right click
+  2 finger move = scroll                        3 finger tap = middle       pressing the pad = click
+                                                                            (right click with 2 fingers)
+Started and stopped by gpu-mode (systemd unit gpu-mode-touchpad). Needs python-evdev.
+"""
+import math, sys, time
+import evdev
+from evdev import ecodes as E
+
+SRC = sys.argv[1] if len(sys.argv) > 1 else \
+    '/dev/input/by-path/pci-0000:00:15.1-platform-i2c_designware.1-event-mouse'
+GAIN = 0.55          # pixels per touchpad unit at slow speed (pad: 32 units/mm)
+ACCEL = 0.012        # extra gain per unit/frame of speed
+MAX_GAIN = 2.2
+SCROLL_STEP = 45     # touchpad units per wheel click
+TAP_TIME = 0.20      # s
+TAP_MOVE = 60        # touchpad units
+
+pad = evdev.InputDevice(SRC)
+out = evdev.UInput({E.EV_KEY: [E.BTN_LEFT, E.BTN_RIGHT, E.BTN_MIDDLE],
+                    E.EV_REL: [E.REL_X, E.REL_Y, E.REL_WHEEL, E.REL_HWHEEL]},
+                   name='gpu-mode touchpad bridge')
+pad.grab()
+
+fingers = 0; touching = False
+x = y = None; px = py = None
+fx = fy = 0.0; sx = sy = 0.0
+t0 = 0.0; moved = 0.0; max_f = 0; pressed = None
+
+def emit(t, c, v): out.write(t, c, v)
+def click(btn):
+    emit(E.EV_KEY, btn, 1); out.syn(); emit(E.EV_KEY, btn, 0); out.syn()
+
+for ev in pad.read_loop():
+    if ev.type == E.EV_ABS:
+        if ev.code == E.ABS_X: x = ev.value
+        elif ev.code == E.ABS_Y: y = ev.value
+    elif ev.type == E.EV_KEY:
+        if ev.code == E.BTN_TOUCH:
+            if ev.value:
+                touching = True; t0 = time.monotonic(); moved = 0.0; max_f = max(fingers, 1)
+                px = py = None
+            else:
+                touching = False
+                if pressed is None and time.monotonic() - t0 < TAP_TIME and moved < TAP_MOVE:
+                    click({1: E.BTN_LEFT, 2: E.BTN_RIGHT}.get(max_f, E.BTN_MIDDLE))
+                px = py = None
+        elif ev.code in (E.BTN_TOOL_FINGER, E.BTN_TOOL_DOUBLETAP, E.BTN_TOOL_TRIPLETAP,
+                         E.BTN_TOOL_QUADTAP, E.BTN_TOOL_QUINTTAP):
+            n = {E.BTN_TOOL_FINGER: 1, E.BTN_TOOL_DOUBLETAP: 2, E.BTN_TOOL_TRIPLETAP: 3,
+                 E.BTN_TOOL_QUADTAP: 4, E.BTN_TOOL_QUINTTAP: 5}[ev.code]
+            if ev.value:
+                fingers = n; max_f = max(max_f, n)
+            elif fingers == n:
+                fingers = 0
+            px = py = None; sx = sy = 0.0       # no jump when the finger count changes
+        elif ev.code == E.BTN_LEFT:              # physical press of the clickpad
+            if ev.value:
+                pressed = E.BTN_RIGHT if fingers >= 2 else E.BTN_LEFT
+                emit(E.EV_KEY, pressed, 1); out.syn()
+            elif pressed is not None:
+                emit(E.EV_KEY, pressed, 0); out.syn(); pressed = None
+    elif ev.type == E.EV_SYN and ev.code == E.SYN_REPORT:
+        if not touching or x is None:
+            continue
+        if px is not None:
+            dx, dy = x - px, y - py
+            moved += abs(dx) + abs(dy)
+            if fingers >= 2:
+                sx += dx; sy += dy
+                wy = int(sy / SCROLL_STEP); wx = int(sx / SCROLL_STEP)
+                if wy: emit(E.EV_REL, E.REL_WHEEL, wy); sy -= wy * SCROLL_STEP
+                if wx: emit(E.EV_REL, E.REL_HWHEEL, -wx); sx -= wx * SCROLL_STEP
+                if wx or wy: out.syn()
+            elif fingers == 1 or pressed is not None:
+                g = min(GAIN + ACCEL * math.hypot(dx, dy), MAX_GAIN)
+                fx += dx * g; fy += dy * g
+                ix, iy = int(fx), int(fy)
+                if ix or iy:
+                    if ix: emit(E.EV_REL, E.REL_X, ix)
+                    if iy: emit(E.EV_REL, E.REL_Y, iy)
+                    out.syn(); fx -= ix; fy -= iy
+        px, py = x, y

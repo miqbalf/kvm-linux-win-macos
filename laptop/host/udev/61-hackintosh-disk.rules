@@ -1,0 +1,5 @@
+# Named 61-: must run after 60-persistent-storage.rules, which sets ID_MODEL.
+# Stable name for the laptop's real Hackintosh disk (Samsung 980 1TB), used as the read-only backing
+# of the macOS VM overlay. /dev/nvmeXn1 numbering swaps between boots on this laptop (2026-11-19:
+# after a reboot nvme1n1 became the CachyOS disk), so never reference /dev/nvme*n1 in VM configs.
+KERNEL=="nvme*n1", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_MODEL}=="Samsung SSD 980 1TB", SYMLINK+="hackintosh-disk"

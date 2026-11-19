@@ -1,0 +1,93 @@
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+  <!-- macOS with the laptop's Intel UHD 630 passed through (GVT-d): Metal acceleration and the
+       laptop's own panel. Start ONLY through `gpu-mode mac` (it stops GDM and binds 00:02.0 to
+       vfio-pci first); never with plain `virsh start`. Never run together with the `macos` domain:
+       both use the same disk overlay.
+       No emulated display: debug via SSH (192.168.122.11) and the serial log. -->
+  <name>macos-igpu</name>
+  <uuid>77c1f6e2-3b2a-4c4e-9a1f-2d8b6a5c9d04</uuid>
+  <memory unit='GiB'>12</memory>
+  <currentMemory unit='GiB'>12</currentMemory>
+  <vcpu placement='static'>6</vcpu>
+  <os firmware='efi'>
+    <type arch='x86_64' machine='pc'>hvm</type>
+    <loader readonly='yes' type='pflash'>/usr/share/edk2/x64/OVMF_CODE.4m.fd</loader>
+    <nvram template='/usr/share/edk2/x64/OVMF_VARS.4m.fd'>/var/lib/libvirt/qemu/nvram/macos-igpu_VARS.fd</nvram>
+  </os>
+  <features><acpi/><apic/><vmport state='off'/><ioapic driver='kvm'/></features>
+  <cpu mode='host-passthrough' check='none' migratable='off'>
+    <topology sockets='1' dies='1' cores='3' threads='2'/>
+    <cache mode='passthrough'/>
+    <feature policy='require' name='invtsc'/>
+  </cpu>
+  <clock offset='utc'><timer name='rtc' tickpolicy='catchup'/><timer name='pit' tickpolicy='delay'/><timer name='hpet' present='yes'/></clock>
+  <on_poweroff>destroy</on_poweroff><on_reboot>restart</on_reboot><on_crash>destroy</on_crash>
+  <devices>
+    <serial type='file'><source path='/var/lib/libvirt/qemu/macos-igpu-serial.log'/><target type='isa-serial' port='0'/></serial>
+    <!-- VM-only OpenCore with the real iGPU DeviceProperties (make-vm-config.py with the igpu option) -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source file='/var/lib/libvirt/images/macos/opencore-igpu.img'/>
+      <target dev='sda' bus='sata'/>
+      <boot order='1'/>
+    </disk>
+    <!-- Same copy-on-write overlay as the `macos` domain; /dev/hackintosh-disk (udev name) is only read. -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='none'/>
+      <source file='/var/lib/libvirt/images/macos/nvme1-overlay.qcow2'/>
+      <backingStore type='block'><format type='raw'/><source dev='/dev/hackintosh-disk'/></backingStore>
+      <target dev='sdb' bus='sata'/>
+    </disk>
+    <interface type='network'>
+      <mac address='52:54:00:aa:bb:61'/>
+      <source network='default'/>
+      <model type='vmxnet3'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x04' function='0x0'/>
+    </interface>
+    <!-- iGPU at the same guest address as on the real laptop (00:02.0), so the OpenCore
+         DeviceProperties path PciRoot(0x0)/Pci(0x2,0x0) matches. managed=no: gpu-mode binds it. -->
+    <hostdev mode='subsystem' type='pci' managed='no'>
+      <source><address domain='0x0000' bus='0x00' slot='0x02' function='0x0'/></source>
+      <!-- IGD legacy mode requires an option ROM: the Intel GOP from the laptop BIOS (make-gop-rom.py).
+           On its own it does not start in OVMF (no GOP policy); OpenCore loads PlatformGopPolicy.efi
+           and the same GOP again, then connects it. -->
+      <rom file='/var/lib/libvirt/images/macos/igd-gop.rom'/>
+      <alias name='ua-igpu'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+    </hostdev>
+    <!-- Laptop keyboard and touchpad go to the guest. Press both Ctrl keys to toggle back to the host. -->
+    <input type='evdev'>
+      <source dev='/dev/input/by-path/platform-i8042-serio-0-event-kbd' grab='all' grabToggle='ctrl-ctrl' repeat='on'/>
+    </input>
+    <!-- Touchpad through host/touchpad-bridge (tap-to-click, two-finger scroll, acceleration);
+         gpu-mode starts the bridge before the VM. The raw touchpad is absolute and has no taps. -->
+    <input type='evdev'>
+      <source dev='/dev/input/gpu-mode-touchpad' grabToggle='ctrl-ctrl'/>
+    </input>
+    <controller type='usb' model='qemu-xhci'/>
+    <!-- extra virtual keyboard so `virsh send-key` / HMP sendkey works without a screen -->
+    <input type='keyboard' bus='usb'/>
+    <!-- macOS has no PS/2 driver: the bridged touchpad (relative) needs a USB mouse. -->
+    <input type='mouse' bus='usb'/>
+    <video><model type='none'/></video>
+    <memballoon model='none'/>
+  </devices>
+  <qemu:commandline>
+    <qemu:arg value='-device'/>
+    <qemu:arg value='isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc'/>
+  </qemu:commandline>
+  <qemu:override>
+    <qemu:device alias='ua-igpu'>
+      <qemu:frontend>
+        <!-- Intel OpRegion (VBT) to the guest: needed for the laptop's eDP panel. -->
+        <qemu:property name='x-igd-opregion' type='bool' value='true'/>
+        <!-- 64 MB stolen memory (DVMT) for the guest framebuffer (OpenCore patches need ~28 MB) -->
+        <qemu:property name='x-igd-gms' type='unsigned' value='2'/>
+        <!-- Intel GOP checks host bridge + PCH IDs: IGD legacy mode (needs i440fx, guest 00:02.0)
+             copies the real IDs into the VM so the GOP from the BIOS starts and lights the panel. -->
+        <qemu:property name='x-igd-legacy-mode' type='string' value='on'/>
+        <qemu:property name='x-igd-lpc' type='bool' value='true'/>
+      </qemu:frontend>
+    </qemu:device>
+  </qemu:override>
+</domain>

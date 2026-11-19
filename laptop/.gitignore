@@ -1,0 +1,10 @@
+# Laptop (Acer, i5-10300H, GTX 1650): local build artifacts that must never be committed.
+# The OpenCore copy and image contain SMBIOS serials (repo rule: never commit serials).
+vm/macos/oc-build/
+vm/macos/opencore-lt.img
+*.bak
+*.img
+*.img.bak
+*.binary-bak
+*.efi
+*.rom
