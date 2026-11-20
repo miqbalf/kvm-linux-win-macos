@@ -46,11 +46,17 @@ A program removed in Windows loses its launcher on the next sync.
 | Good for | games, video, anything fast | office, browser, tools |
 | Session | Windows console | its own RDP session of the same user |
 
-Sessions (`fSingleSessionPerUser=0`, set 2026-11-20): the app windows run in their own RDP session, so the
-desktop session is not signed out. Windows 10 allows one *active* session: opening an app window while you
-use the Looking Glass desktop locks that desktop (its programs keep running); log in there again to go back.
-Tested: app windows open with no sign-out while a disconnected desktop session exists. Not yet tested: with
-the desktop logged in on the Looking Glass window at the same moment.
+Several programs at once (2026-11-20): each WinApps click is a new RDP connection. With
+`fSingleSessionPerUser=0` every connection made a new Windows session, and Windows 10 (one active session)
+asked to sign the other one out on every click. With `=1` a new connection takes the session over instead.
+So the launchers (`winapps-sync --open`, also for WinApps' own Paint/Explorer/cmd entries) only open an RDP
+connection for the first program. While one is open they start the next program inside that session via the
+guest agent (SYSTEM: `WTSQueryUserToken` + `CreateProcessAsUser` into the Active `rdp-tcp#` session that runs
+`rdpinit`); its window comes through the open connection. Tested: Notepad, Calculator, Paint together over one
+FreeRDP process, no prompt. About 5 s per click (guest agent + PowerShell).
+Still one at a time: the full desktop (Looking Glass, console session) and app windows; switching between them
+takes the session over.
+
 Single-instance programs (Edge, Chrome, Office, ...) open as app windows only when they do **not** already run
 in the desktop session: a second copy hands off to the hidden one and exits, so no window appears (seen
 2026-11-20: Edge left open on the Looking Glass desktop, Edge app window never showed). The launchers run
@@ -85,7 +91,7 @@ ArcGIS Pro 3.8 needs the .NET 10 Desktop Runtime (installed 2026-11-20 from aka.
 Values from WinApps `oem/RDPApps.reg` plus the GPU policy:
 ```
 HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server                         fDenyTSConnections = 0
-HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server                         fSingleSessionPerUser = 0   (apps in their own session, no sign-out)
+HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server                         fSingleSessionPerUser = 1   (one session per user; see "Several programs at once")
 HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp     UserAuthentication = 1   (NLA)
 HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList  fDisabledAllowList = 1
 HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services                 fAllowUnlistedRemotePrograms = 1

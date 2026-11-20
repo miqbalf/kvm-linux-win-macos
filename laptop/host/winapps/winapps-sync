@@ -139,6 +139,42 @@ def folder():
         pass
 
 
+# Start a program inside the user's active RDP (app-window) session, as that user, from the guest agent
+# (SYSTEM): WTSQueryUserToken + CreateProcessAsUser. Its window then appears through the FreeRDP connection
+# that is already open, so no second RDP connection is made. (A second connection would take the session
+# over or, with fSingleSessionPerUser=0, make a new session that Windows 10 makes you sign out of.)
+LAUNCH_PS = r"""
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class SL {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct SI { public int cb; public string r, d, t; public int x,y,xs,ys,xc,yc,fa,fl; public short sw, r2; public IntPtr r3, i, o, e; }
+  [StructLayout(LayoutKind.Sequential)] public struct PI { public IntPtr hp, ht; public int pid, tid; }
+  [DllImport("wtsapi32.dll", SetLastError=true)] static extern bool WTSQueryUserToken(int s, out IntPtr t);
+  [DllImport("userenv.dll", SetLastError=true)] static extern bool CreateEnvironmentBlock(out IntPtr e, IntPtr t, bool i);
+  [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr t, string a, string c, IntPtr pa, IntPtr ta, bool ih, int f, IntPtr e, string d, ref SI si, out PI pi);
+  public static int Run(int session, string cmd) {
+    IntPtr t; if (!WTSQueryUserToken(session, out t)) return -Marshal.GetLastWin32Error();
+    IntPtr env; CreateEnvironmentBlock(out env, t, false);
+    var si = new SI(); si.cb = Marshal.SizeOf(si); si.d = "winsta0\\default"; PI pi;
+    if (!CreateProcessAsUser(t, null, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x400, env, null, ref si, out pi)) return -Marshal.GetLastWin32Error();
+    return pi.pid;
+  }
+}
+'@
+$ra = @(Get-Process rdpinit -EA 0 | % SessionId)
+$sid = $null
+foreach ($l in (query session 2>$null)) {
+  if ($l -match '^\s*>?rdp-tcp#\d+\s+__USER__\s+(\d+)\s+Active' -and $ra -contains [int]$matches[1]) { $sid = [int]$matches[1] }
+}
+if ($sid -eq $null) { 'NOSESSION' } else { 'PID ' + [SL]::Run($sid, '__CMD__') }
+"""
+
+
+def connection_open():
+    return subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "xfreerdp3 .*/app:"],
+                          capture_output=True).returncode == 0
+
+
 def open_app(aid, files):
     info = f"{APPS}/{aid}/info"
     exe = ""
@@ -160,6 +196,14 @@ def open_app(aid, files):
                 return
         except (SystemExit, OSError, subprocess.TimeoutExpired):
             pass                       # cannot check: just try
+    if exe and not files and connection_open():
+        try:
+            cmd = f'"{exe}"'.replace("'", "''")
+            out, _ = guest_ps(LAUNCH_PS.replace("__USER__", re.escape(rdp_user())).replace("__CMD__", cmd), timeout=30)
+            if "PID " in out and "PID -" not in out:
+                return                 # window shows up in the open connection
+        except (SystemExit, OSError, subprocess.TimeoutExpired):
+            pass                       # fall back to a new connection
     # Own systemd scope: GNOME maps windows to launchers by the launcher's scope (app-gnome-<launcher>-*),
     # so every window of this RDP connection (e.g. an installer started from Edge) would get this app's icon.
     # Outside that scope, and without /wm-class (see setup-winapps.sh), FreeRDP names each window
@@ -212,6 +256,19 @@ def main():
             os.remove(f"{DESK}/{f}")
             shutil.rmtree(f"{APPS}/{f[len(PREFIX):-8]}", ignore_errors=True)
             gone += 1
+
+    # WinApps' own launchers (Paint, Explorer, cmd, ...) also go through --open (one shared connection).
+    for f in os.listdir(DESK):
+        path = f"{DESK}/{f}"
+        if f.startswith(PREFIX) or not f.endswith(".desktop"):
+            continue
+        try:
+            txt = open(path).read()
+        except OSError:
+            continue
+        m = re.search(rf"^Exec={re.escape(WINAPPS)} (\S+)( %F)?$", txt, re.M)
+        if m and m.group(1) != "windows":
+            write(path, txt.replace(m.group(0), f"Exec={os.path.realpath(sys.argv[0])} --open {m.group(1)} %F"))
 
     folder()
     subprocess.run(["update-desktop-database", DESK], capture_output=True)
