@@ -57,4 +57,9 @@ Config choices:
   with a passed-through GPU.
 - `AUTOPAUSE="off"` for the same reason.
 
+Run it on the laptop's own terminal, or over SSH: the script then borrows `DISPLAY`/`XAUTHORITY` from the
+desktop session (`systemctl --user show-environment`). Without that, WinApps' RDP test fails with
+`xf_setup_x11: failed to open display` and "REMOTE DESKTOP PROTOCOL FAILURE" (exit 14).
+App windows from the app grid open on the laptop screen as usual.
+
 Uninstall: `bash ~/src/winapps/setup.sh --user --uninstall`; `rm -r ~/.config/winapps`.

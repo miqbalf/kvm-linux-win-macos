@@ -11,6 +11,14 @@ SRC=$HOME/src/winapps
 COMMIT=0b950dc4b823a759015c549a46c35aaaf31c77c0   # tested 2026-11-20
 CONF=$HOME/.config/winapps
 
+# Started over SSH (no DISPLAY)? Use the laptop's desktop session: WinApps opens test and app windows there.
+if [ -z "${DISPLAY:-}" ]; then
+  while IFS= read -r kv; do export "$kv"; done < <(systemctl --user show-environment |
+    grep -E '^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_SESSION_TYPE|DBUS_SESSION_BUS_ADDRESS)=')
+  [ -n "${DISPLAY:-}" ] || { echo "no desktop session: log in on the laptop first"; exit 1; }
+  echo "(over SSH: windows open on the laptop screen, DISPLAY=$DISPLAY)"
+fi
+
 sudo pacman -S --needed --noconfirm dialog openbsd-netcat >/dev/null   # freerdp is already installed
 [ -d "$SRC/.git" ] || git clone -q https://github.com/winapps-org/winapps "$SRC"
 git -C "$SRC" fetch -q origin && git -C "$SRC" checkout -q "$COMMIT"
