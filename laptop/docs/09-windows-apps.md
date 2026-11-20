@@ -8,6 +8,14 @@ Status: working 2026-11-20. App-grid entries: Windows (full desktop), Explorer, 
 Paint, Internet Explorer. Tested: Paint opened as its own window on the GNOME desktop.
 
 ## Use
+![VM Switch, App windows](img/vm-switch-app-windows.png)
+
+**VM Switch** > Windows card > **App windows**: confirms, signs out the Windows desktop (needed, see below),
+closes the Looking Glass window and shows the Windows apps as buttons. Click one: it opens in its own window.
+**Full desktop** goes back: closes the app windows (their programs keep running) and opens the Looking Glass
+window; log in there.
+
+Without VM Switch:
 1. Start Windows: VM Switch > **Start Windows** (WinApps never starts or stops the VM itself).
 2. App grid: click a Windows app (e.g. "Explorer", "Word"). It opens in its own window.
    The first start of a session takes a few seconds (RDP login).
