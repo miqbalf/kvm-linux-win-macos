@@ -10,6 +10,7 @@ WIN_USER=${1:?usage: setup-winapps.sh <windows-user>}
 SRC=$HOME/src/winapps
 COMMIT=0b950dc4b823a759015c549a46c35aaaf31c77c0   # tested 2026-11-20
 CONF=$HOME/.config/winapps
+HERE=$(cd "$(dirname "$0")" && pwd)
 
 # Started over SSH (no DISPLAY)? Use the laptop's desktop session: WinApps opens test and app windows there.
 if [ -z "${DISPLAY:-}" ]; then
@@ -44,7 +45,7 @@ VM_NAME="win10-gpu"
 WAFLAVOR="manual"
 RDP_SCALE="100"
 REMOVABLE_MEDIA="/run/media"
-RDP_FLAGS="/cert:tofu /sound /microphone +home-drive"
+RDP_FLAGS="/cert:tofu /sound /microphone +home-drive +fonts +window-drag +menu-anims"   # +fonts = ClearType text
 DEBUG="true"
 AUTOPAUSE="off"
 FREERDP_COMMAND="xfreerdp3"
@@ -61,4 +62,6 @@ nc -z -w 3 192.168.122.13 3389 || { echo "Windows RDP not reachable: start Windo
 echo "Sign out of Windows in the Looking Glass window first (Start > user > Sign out), then press Enter."
 read -r _
 cd "$SRC" && bash setup.sh --user --setupAllOfficiallySupportedApps   # no menus
-echo "More apps (your own installed programs): bash $SRC/setup.sh --user --add-apps"
+# Every Start-menu program into the app grid folder "Windows" (VM Switch re-runs this at each Windows start).
+install -Dm755 "$HERE/winapps-sync" "$HOME/.local/bin/winapps-sync"
+"$HOME/.local/bin/winapps-sync"

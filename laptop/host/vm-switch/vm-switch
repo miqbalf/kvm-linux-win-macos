@@ -3,7 +3,7 @@
 # (Looking Glass window), macOS on the laptop screen (iGPU), plus the VNC-only VMs.
 # Uses gpu-mode (through pkexec, policy local.kvm.gpu-mode) for GPU switches, virsh (group libvirt)
 # for the plain VMs, win-gpu for the Looking Glass window, nitro-control for fans and RGB.
-import base64, fcntl, glob, json, os, shutil, subprocess, sys, threading, time
+import fcntl, glob, os, shutil, subprocess, sys, threading, time
 # Draw with the Intel iGPU only. GTK4 otherwise opens the GTX (NVIDIA EGL/Vulkan) and holds /dev/nvidia*,
 # which blocks `gpu-mode win` from moving the GTX to Windows ("programs still use the GTX: python3").
 os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = "/usr/share/glvnd/egl_vendor.d/50_mesa.json"
@@ -88,25 +88,6 @@ def winapps_entries():
     return [(nice.get(a, n if names.count(n) == 1 else f"{n} ({a})"), a, i) for n, a, i in out]
 
 
-def guest_ps(vm, script, timeout=60):
-    """Run PowerShell in the guest through the QEMU guest agent (group libvirt, no sudo). Returns (rc, output)."""
-    def qga(o):
-        r = subprocess.run(VIRSH + ["qemu-agent-command", vm, json.dumps(o), "--timeout", "30"],
-                           capture_output=True, text=True, timeout=40)
-        if r.returncode:
-            raise OSError(r.stderr.strip() or "guest agent not answering")
-        return json.loads(r.stdout)["return"]
-    pid = qga({"execute": "guest-exec", "arguments": {"path": "powershell.exe", "capture-output": True,
-               "arg": ["-NoProfile", "-NonInteractive", "-Command", script]}})["pid"]
-    for _ in range(timeout * 2):
-        st = qga({"execute": "guest-exec-status", "arguments": {"pid": pid}})
-        if st.get("exited"):
-            out = "".join(base64.b64decode(st.get(k, "")).decode("utf-8", "replace") for k in ("out-data", "err-data"))
-            return st.get("exitcode", 0), out
-        time.sleep(0.5)
-    return 1, "timeout"
-
-
 def app_windows_open():
     """True while WinApps (FreeRDP RemoteApp) windows are open."""
     return subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "xfreerdp3 .*/app:"], capture_output=True).returncode == 0
@@ -136,8 +117,6 @@ class OsCard(Gtk.Box):
         self.append(self.info)
         self.buttons = Gtk.Box(spacing=8, margin_top=4)
         self.append(self.buttons)
-        self.extra = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self.append(self.extra)
 
     def set_state(self, text, kind, info):
         self.pill.set_label(text)
@@ -208,24 +187,7 @@ class Win(Adw.ApplicationWindow):
         box.append(self.win)
         box.append(self.mac)
 
-        # Windows: "Full desktop" (Looking Glass) or "App windows" (WinApps, like Coherence)
-        self.mode = None            # chosen in this app; None = follow what is running
-        self.mode_box = Gtk.Box(spacing=0, halign=Gtk.Align.START, margin_top=6)
-        self.mode_box.add_css_class("linked")
-        self.btn_desk = Gtk.ToggleButton(label="Full desktop")
-        self.btn_apps = Gtk.ToggleButton(label="App windows", group=self.btn_desk)
-        self.btn_desk.connect("clicked", lambda b: self.want_mode("desktop"))
-        self.btn_apps.connect("clicked", lambda b: self.want_mode("apps"))
-        self.mode_box.append(self.btn_desk)
-        self.mode_box.append(self.btn_apps)
-        self.win.extra.append(self.mode_box)
-        self.mode_hint = Gtk.Label(xalign=0, wrap=True)
-        self.mode_hint.add_css_class("dim-label")
-        self.win.extra.append(self.mode_hint)
-        self.app_grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=4,
-                                    min_children_per_line=2, column_spacing=8, row_spacing=8, homogeneous=True)
-        self.win.extra.append(self.app_grid)
-        self.app_ids = None
+        self.synced = False      # winapps-sync ran for this Windows boot
 
         more = Adw.PreferencesGroup(title="More")
         box.append(more)
@@ -293,15 +255,16 @@ class Win(Adw.ApplicationWindow):
         if busy or wp:
             self.win.set_state(wp or "Switching", "busy", "Please wait…")
             self.win.set_buttons([("Working…", None, None)])
-        elif win_on and (self.mode or ("apps" if s.get("apps") else "desktop")) == "apps":
-            self.win.set_state("Running", "on", "On the GTX 1650, as separate app windows.")
-            self.win.set_buttons([("Shut down", None, self.win_stop)])
         elif win_on:
             self.win.set_state("Running", "on", "On the GTX 1650, in a window on this desktop." +
                                ("" if s["lg"] else " The window is closed."))
-            self.win.set_buttons([("Show window" if not s["lg"] else "Window is open", "suggested-action",
+            self.win.set_buttons([("Show desktop" if not s["lg"] else "Desktop is open", "suggested-action",
                                    None if s["lg"] else self.win_show),
+                                  ("Windows apps", None, self.show_apps),
                                   ("Shut down", None, self.win_stop)])
+            if not self.synced:
+                self.synced = True
+                self.sync_apps()
         else:
             blocked = "win10" in run
             self.win.set_state("Off", "off", "Runs in a window here, with the GTX 1650 for games and apps. "
@@ -309,8 +272,7 @@ class Win(Adw.ApplicationWindow):
             self.win.set_buttons([("Start Windows", "suggested-action", None if blocked else self.win_start)])
 
         if not win_on:
-            self.mode = None
-        self.render_mode(s, win_on and not (busy or wp))
+            self.synced = False
 
         # macOS card
         mp = self.pending.get("macos-igpu")
@@ -414,98 +376,25 @@ class Win(Adw.ApplicationWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
-    # ---------- Windows: full desktop vs app windows ----------
-    def render_mode(self, s, show):
-        self.mode_box.set_visible(show)
-        self.mode_hint.set_visible(show)
-        apps = winapps_entries()
-        mode = self.mode or ("apps" if s.get("apps") else "desktop")
-        self.btn_desk.set_active(mode == "desktop")
-        self.btn_apps.set_active(mode == "apps")
-        self.btn_apps.set_sensitive(bool(apps))
-        self.app_grid.set_visible(show and mode == "apps")
-        if not apps:
-            self.mode_hint.set_label("App windows need WinApps: bash laptop/host/winapps/setup-winapps.sh <windows-user>")
-        elif mode == "apps":
-            self.mode_hint.set_label("Each app opens in its own window on this desktop. Click one:")
-        else:
-            self.mode_hint.set_label("The whole Windows desktop in one window (best for games and video).")
-        ids = [a[1] for a in apps]
-        if ids != self.app_ids:
-            self.app_ids = ids
-            while (c := self.app_grid.get_first_child()):
-                self.app_grid.remove(c)
-            for name, app_id, icon in apps:
-                b = Gtk.Button()
-                b.add_css_class("flat")
-                v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-                img = Gtk.Image(pixel_size=40)
-                if icon and os.path.exists(icon):
-                    img.set_from_file(icon)
-                else:
-                    img.set_from_icon_name("application-x-executable-symbolic")
-                v.append(img)
-                lab = Gtk.Label(label=name, wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=12)
-                v.append(lab)
-                b.set_child(v)
-                b.connect("clicked", lambda _b, a=app_id, n=name: self.open_app(a, n))
-                self.app_grid.append(b)
-
-    def want_mode(self, mode):
-        cur = self.mode or ("apps" if (self.state or {}).get("apps") else "desktop")
-        if mode == cur:
+    # ---------- Windows apps as Linux windows (WinApps, Coherence-style) ----------
+    def sync_apps(self):
+        """Start-menu programs -> app grid folder "Windows" (winapps-sync, in the background)."""
+        tool = shutil.which("winapps-sync") or os.path.expanduser("~/.local/bin/winapps-sync")
+        if not os.path.exists(tool):
             return
-        if mode == "apps":
-            self.ask("Use Windows apps as separate windows?",
-                     "The Windows desktop is signed out first (Windows allows one session per user): "
-                     "programs open on the full desktop close, save your work there.\n\n"
-                     "Then click an app below; each opens in its own window here.",
-                     "Sign out and continue", Adw.ResponseAppearance.SUGGESTED, self.to_apps)
-        else:
-            self.to_desktop()
-        if self.state:
-            self.render(self.state)   # undo the toggle until confirmed
-
-    def to_apps(self):
-        self.mode = "apps"
-        subprocess.run(["pkill", "-u", str(os.getuid()), "-f", "looking-glass-client"])
-        self.pending["win10-gpu"] = "Signing out"
-        self.render(self.state)
-
         def work():
-            try:
-                # Sign out the console session (Looking Glass). RDP sessions stay.
-                rc, out = guest_ps("win10-gpu",
-                    "$n = 0; foreach ($l in (query session 2>$null)) {"
-                    " if ($l -match 'console\\s+\\S+\\s+(\\d+)\\s+Active') { logoff $matches[1]; $n++ } };"
-                    "if ($n) { Start-Sleep 3; 'signed out' } else { 'nobody on console' }")
-            except (OSError, subprocess.TimeoutExpired) as e:
-                rc, out = 1, str(e)
-            GLib.idle_add(done, rc, out)
-
-        def done(rc, out):
-            self.pending.pop("win10-gpu", None)
-            if rc:
-                self.fail("Could not sign out of Windows", out.strip()[-300:])
-            else:
-                self.toast("Ready: click an app")
-            self.poll()
-            return False
-
+            time.sleep(40)        # guest agent answers once Windows has booted
+            subprocess.run([tool, "--quiet"], capture_output=True)
         threading.Thread(target=work, daemon=True).start()
 
-    def to_desktop(self):
-        self.mode = "desktop"
-        # Closing the app windows only disconnects the RDP session: the apps keep running and show up on the
-        # full desktop after you log in in the Looking Glass window.
-        subprocess.run(["pkill", "-u", str(os.getuid()), "-f", "xfreerdp3 .*/app:"])
-        self.launch(["win-gpu"], "win-gpu is not installed")
-        self.toast("Full desktop: log in in the Windows window (your app windows continue there)")
-        self.poll()
-
-    def open_app(self, app_id, name):
-        self.launch([os.path.expanduser("~/.local/bin/winapps"), app_id], "WinApps is not installed")
-        self.toast(f"Opening {name}… (first app takes a few seconds)")
+    def show_apps(self):
+        if not winapps_entries():
+            self.fail("Windows apps are not set up", "Run once: bash laptop/host/winapps/setup-winapps.sh <windows-user>")
+            return
+        # GNOME app grid; the Windows programs are in its folder "Windows".
+        subprocess.Popen(["gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path", "/org/gnome/Shell",
+                          "--method", "org.gnome.Shell.ShowApplications"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.toast("App grid > folder “Windows”. Each app opens in its own window.")
 
     def win_show(self):
         self.launch(["win-gpu"], "win-gpu is not installed")

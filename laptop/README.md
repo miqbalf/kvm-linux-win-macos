@@ -14,7 +14,7 @@ is shared with it.
 ## Apps (no terminal needed)
 | App (app grid) | What | Install |
 |---|---|---|
-| **VM Switch** | See what runs; buttons to start/stop Windows on the GTX, macOS on the laptop screen, the VNC VMs; Windows as **Full desktop** or **App windows** (like Coherence) | `sudo bash laptop/host/vm-switch/install.sh` |
+| **VM Switch** | See what runs; buttons to start/stop Windows on the GTX, macOS on the laptop screen, the VNC VMs; Windows desktop, or Windows apps as Linux windows (Coherence-style, app grid folder "Windows") | `sudo bash laptop/host/vm-switch/install.sh` |
 | **Nitro Control** | Fans (auto / max / custom), 4-zone keyboard RGB and effects, 80% battery limit, live RPM and temps | `sudo bash laptop/host/nitrosense/install.sh` |
 | **Windows (GTX 1650)** | Starts Windows and opens its window in one click | part of `01-host-setup.sh` |
 

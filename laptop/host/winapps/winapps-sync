@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""winapps-sync - put every Windows Start-menu program into the GNOME app grid (Coherence-style).
+
+Asks Windows (QEMU guest agent, no RDP, no password) for the Start-menu shortcuts of all users and
+of RDP_USER, with 256 px icons. For each program it writes a WinApps app
+(~/.local/share/winapps/apps/<id>/{info,icon.png,icon.svg}) and a launcher
+~/.local/share/applications/winapps-<id>.desktop. All of them land in the app-grid folder "Windows".
+Programs removed in Windows lose their launcher on the next sync. The apps that WinApps' own setup
+created (Paint, Explorer, ...) are kept and only moved into the folder.
+
+  winapps-sync            sync now (Windows must be running)
+  winapps-sync --quiet    no output unless something fails (VM Switch runs it when Windows starts)
+"""
+import base64, json, os, re, shutil, subprocess, sys, time
+
+VM = "win10-gpu"
+VIRSH = ["virsh", "-c", "qemu:///system"]
+HOME = os.path.expanduser("~")
+APPS = f"{HOME}/.local/share/winapps/apps"
+DESK = f"{HOME}/.local/share/applications"
+WINAPPS = f"{HOME}/.local/bin/winapps"
+CONF = f"{HOME}/.config/winapps/winapps.conf"
+PREFIX = "winapps-"          # our launchers; WinApps' own ones have no prefix
+QUIET = "--quiet" in sys.argv
+
+PS = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.Drawing
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class Ico {
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+  public static extern uint PrivateExtractIcons(string f, int i, int cx, int cy, IntPtr[] h, uint[] id, uint n, uint fl);
+  [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
+}
+'@
+function Png($file, $index) {
+  foreach ($size in 256, 128, 64, 48, 32) {
+    $h = New-Object IntPtr[] 1; $id = New-Object uint32[] 1
+    if ([Ico]::PrivateExtractIcons($file, $index, $size, $size, $h, $id, 1, 0) -ge 1 -and $h[0] -ne [IntPtr]::Zero) {
+      $bmp = [System.Drawing.Icon]::FromHandle($h[0]).ToBitmap()
+      $ms = New-Object IO.MemoryStream; $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+      [Ico]::DestroyIcon($h[0]) | Out-Null
+      return [Convert]::ToBase64String($ms.ToArray())
+    }
+  }
+  return ''
+}
+$sh = New-Object -ComObject WScript.Shell
+$dirs = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs",
+          "$env:SystemDrive\Users\__USER__\AppData\Roaming\Microsoft\Windows\Start Menu\Programs")
+$skip = 'uninstall|readme|help|documentation|website|release notes|license|support|manual|setup|repair'
+$seen = @{}; $out = @()
+foreach ($d in $dirs) {
+  Get-ChildItem $d -Recurse -Filter *.lnk | Sort-Object FullName | ForEach-Object {
+    $name = $_.BaseName
+    if ($name -match $skip) { return }
+    # Admin, accessibility and startup entries, and this setup's own helpers, stay out of the grid.
+    if ($_.FullName -match '\\(Administrative Tools|Windows Administrative Tools|Accessibility|Startup|Maintenance)\\') { return }
+    if ($name -match '^(Administrative Tools|Looking Glass|Deskflow|immersive control panel|ODBC|iSCSI|Recovery|Memory Diagnostics|Windows Fax|Math Input|Speech Recognition|Steps Recorder)') { return }
+    $l = $sh.CreateShortcut($_.FullName); $t = $l.TargetPath
+    if (-not $t -or $t -notmatch '\.exe$' -or -not (Test-Path $t)) { return }
+    if ($t -match '\\(cmd|powershell|powershell_ise|explorer|mspaint|iexplore|msiexec|rundll32|wscript|cscript)\.exe$') { return }
+    $k = $t.ToLower(); if ($seen[$k]) { return }; $seen[$k] = 1
+    $icoFile = $t; $icoIdx = 0
+    if ($l.IconLocation -and $l.IconLocation -notmatch '^,') {
+      $p = $l.IconLocation -split ',' ; $f = [Environment]::ExpandEnvironmentVariables($p[0])
+      if (Test-Path $f) { $icoFile = $f; $icoIdx = [int]$p[-1] }
+    }
+    $out += [pscustomobject]@{ name = $name; exe = $t; args = $l.Arguments; icon = (Png $icoFile $icoIdx) }
+  }
+}
+ConvertTo-Json -InputObject @($out) -Compress
+"""
+
+
+def say(*a):
+    if not QUIET:
+        print(*a)
+
+
+def qga(cmd):
+    r = subprocess.run(VIRSH + ["qemu-agent-command", VM, json.dumps(cmd), "--timeout", "60"],
+                       capture_output=True, text=True, timeout=90)
+    if r.returncode:
+        raise SystemExit(f"winapps-sync: guest agent: {r.stderr.strip() or 'no answer'} (is Windows running?)")
+    return json.loads(r.stdout)["return"]
+
+
+def guest_ps(script, timeout=180):
+    # Long scripts: -EncodedCommand (UTF-16LE base64) avoids every quoting problem.
+    enc = base64.b64encode(script.encode("utf-16-le")).decode()
+    pid = qga({"execute": "guest-exec", "arguments": {"path": "powershell.exe", "capture-output": True,
+               "arg": ["-NoProfile", "-NonInteractive", "-EncodedCommand", enc]}})["pid"]
+    for _ in range(timeout * 2):
+        st = qga({"execute": "guest-exec-status", "arguments": {"pid": pid}})
+        if st.get("exited"):
+            return (base64.b64decode(st.get("out-data", "")).decode("utf-8", "replace"),
+                    base64.b64decode(st.get("err-data", "")).decode("utf-8", "replace"))
+        time.sleep(0.5)
+    raise SystemExit("winapps-sync: Windows took too long to list its programs")
+
+
+def rdp_user():
+    for line in open(CONF):
+        m = re.match(r'\s*RDP_USER="?([^"\n]*)"?', line)
+        if m:
+            return m.group(1)
+    raise SystemExit(f"winapps-sync: RDP_USER missing in {CONF}")
+
+
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40] or "app"
+
+
+def write(path, text, mode=0o644):
+    with open(path, "w") as f:
+        f.write(text)
+    os.chmod(path, mode)
+
+
+def folder():
+    """App-grid folder 'Windows' holding every desktop entry with Category WinApps."""
+    base = "org.gnome.desktop.app-folders"
+    path = "/org/gnome/desktop/app-folders/folders/Windows/"
+    try:
+        kids = subprocess.run(["gsettings", "get", base, "folder-children"], capture_output=True, text=True).stdout
+        if "'Windows'" not in kids:
+            lst = re.findall(r"'([^']*)'", kids) + ["Windows"]
+            subprocess.run(["gsettings", "set", base, "folder-children", str(lst)], check=False)
+        subprocess.run(["gsettings", "set", f"{base}.folder:{path}", "name", "Windows"], check=False)
+        subprocess.run(["gsettings", "set", f"{base}.folder:{path}", "categories", "['WinApps']"], check=False)
+    except OSError:
+        pass
+
+
+def main():
+    if not os.path.exists(WINAPPS):
+        raise SystemExit("winapps-sync: WinApps is not installed (laptop/host/winapps/setup-winapps.sh)")
+    out, err = guest_ps(PS.replace("__USER__", rdp_user()))
+    try:
+        progs = json.loads(out.strip() or "[]")
+    except json.JSONDecodeError:
+        raise SystemExit("winapps-sync: unexpected answer from Windows:\n" + (err or out)[-600:])
+
+    os.makedirs(APPS, exist_ok=True)
+    keep, ids = set(), set()
+    for p in progs:
+        p["name"] = re.sub(r'["$`\\\n]', "", p["name"]).strip() or "App"
+        aid = "win-" + slug(p["name"])
+        while aid in ids:
+            aid += "-2"
+        ids.add(aid)
+        d = f"{APPS}/{aid}"
+        os.makedirs(d, exist_ok=True)
+        exe = p["exe"].replace('"', "")
+        write(f"{d}/info", f'NAME="{p["name"]}"\nFULL_NAME="{p["name"]}"\nWIN_EXECUTABLE="{exe}"\n'
+                           'CATEGORIES="WinApps"\nMIME_TYPES=""\n')
+        icon = f"{d}/icon.png"
+        if p.get("icon"):
+            open(icon, "wb").write(base64.b64decode(p["icon"]))
+            # WinApps passes icon.svg to FreeRDP for the window icon: an SVG wrapping the PNG.
+            write(f"{d}/icon.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">'
+                                   f'<image width="256" height="256" href="data:image/png;base64,{p["icon"]}"/></svg>')
+        else:
+            icon = "application-x-executable"
+        name = p["name"].replace("\n", " ")
+        f = f"{PREFIX}{aid}.desktop"
+        keep.add(f)
+        write(f"{DESK}/{f}", "[Desktop Entry]\nType=Application\n"
+              f"Name={name}\nComment={name} (Windows)\nExec={WINAPPS} {aid} %F\nIcon={icon}\n"
+              f"StartupWMClass={name}\nCategories=WinApps;\nTerminal=false\n")
+
+    # Launchers of programs no longer in Windows.
+    gone = 0
+    for f in os.listdir(DESK):
+        if f.startswith(PREFIX + "win-") and f.endswith(".desktop") and f not in keep:
+            os.remove(f"{DESK}/{f}")
+            shutil.rmtree(f"{APPS}/{f[len(PREFIX):-8]}", ignore_errors=True)
+            gone += 1
+
+    folder()
+    subprocess.run(["update-desktop-database", DESK], capture_output=True)
+    say(f"Windows apps in the app grid (folder 'Windows'): {len(progs)} synced, {gone} removed")
+
+
+if __name__ == "__main__":
+    main()

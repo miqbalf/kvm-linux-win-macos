@@ -4,24 +4,39 @@
 desktop, each with its own icon in the app grid. It uses RDP RemoteApp (FreeRDP 3 on Linux), which needs
 Windows Pro or Enterprise (here: Windows 10 Enterprise LTSC).
 
-Status: working 2026-11-20. App-grid entries: Windows (full desktop), Explorer, cmd, PowerShell, PowerShell ISE,
-Paint, Internet Explorer. Tested: Paint opened as its own window on the GNOME desktop.
+Status: working 2026-11-20. App grid folder **Windows**: every Start-menu program (12 on this VM: Edge,
+Notepad, Calculator, NVIDIA App, ...) plus WinApps' Explorer, cmd, PowerShell, Paint. Tested: Paint opened as its own window on the GNOME desktop.
+
+## How Parallels Coherence works, and what we copy
+Parallels Coherence hides the Windows desktop. Every Windows program window becomes a normal Mac window,
+the Windows Start-menu programs appear in the Mac Dock and Launchpad (folder "Windows Applications") with
+their own icons, and that folder follows what you install or remove in Windows. Clipboard, files and sound
+are shared. Windows keeps drawing its own title bars.
+
+| Coherence | Here |
+|---|---|
+| Windows apps in Launchpad, folder "Windows Applications" | GNOME app grid, folder **Windows** (`winapps-sync`) |
+| list follows installs/removals in Windows | `winapps-sync` runs each time VM Switch starts Windows; or run `winapps-sync` |
+| app windows on the Mac desktop and Dock | FreeRDP RemoteApp windows; pin them to the GNOME dock |
+| desktop hidden, no sign-out | separate RDP session for the apps (`fSingleSessionPerUser=0`); the desktop session is left alone |
+| clipboard, home folder, sound | text clipboard, `\\tsclient\home`, sound to Linux |
+| not here | Windows notification-area icons in the Linux top bar; file associations only for WinApps' built-in apps |
 
 ## Use
-![VM Switch, App windows](img/vm-switch-app-windows.png)
+1. Start Windows: VM Switch > **Start Windows**. About 40 s later VM Switch syncs the Start-menu programs
+   into the app grid (folder **Windows**, real icons).
+2. Open a program: app grid > **Windows** > click it (or VM Switch > **Windows apps**). It opens in its own
+   window. The first one takes a few seconds (RDP login), the next ones are quick.
+3. Whole Windows desktop instead: VM Switch > **Show desktop** (Looking Glass, best for games and video).
 
-**VM Switch** > Windows card > **App windows**: confirms, signs out the Windows desktop (needed, see below),
-closes the Looking Glass window and shows the Windows apps as buttons. Click one: it opens in its own window.
-**Full desktop** goes back: closes the app windows (their programs keep running) and opens the Looking Glass
-window; log in there.
-
-Without VM Switch:
-1. Start Windows: VM Switch > **Start Windows** (WinApps never starts or stops the VM itself).
-2. App grid: click a Windows app (e.g. "Explorer", "Word"). It opens in its own window.
-   The first start of a session takes a few seconds (RDP login).
-3. Terminal: `winapps windows` (whole desktop over RDP), `winapps manual notepad.exe`, `winapps check`.
-
+Terminal: `winapps-sync` (sync the list now), `winapps windows` (whole desktop over RDP),
+`winapps manual notepad.exe`, `winapps check`.
 Linux home is `\\tsclient\home` in Windows; text clipboard works both ways; sound goes to Linux.
+
+`winapps-sync` reads the Start menu through the QEMU guest agent (no RDP, no password), skips admin,
+accessibility and uninstall entries, takes 256 px icons from the program files, and writes
+`~/.local/share/applications/winapps-win-*.desktop` + `~/.local/share/winapps/apps/win-*/`.
+A program removed in Windows loses its launcher on the next sync.
 
 ## Coherence vs. Looking Glass
 | | Looking Glass window (`win-gpu`) | WinApps windows |
@@ -29,21 +44,22 @@ Linux home is `\\tsclient\home` in Windows; text clipboard works both ways; soun
 | Shows | the whole Windows desktop | single apps as Linux windows |
 | Picture | uncompressed frames from the GTX | RDP stream (H.264) |
 | Good for | games, video, anything fast | office, browser, tools |
-| Session | Windows console | RDP session of the same user |
+| Session | Windows console | its own RDP session of the same user |
 
-Only one of the two at a time, per Windows user:
-- WinApps needs the user **signed out** on the console (Looking Glass): with a desktop open there, the RemoteApp
-  login is refused (`LOGON_MSG_BUMP_OPTIONS` in the FreeRDP log). Locking is not enough: Start > user > Sign out.
-- Back to Looking Glass: close the WinApps windows, then log in in the Looking Glass window (the RDP session is
-  taken over).
-- The Deskflow client inside Windows runs in the console session: while you use WinApps, the Mac mouse reaches
-  the app windows through the laptop instead (they are normal Linux windows).
+Sessions (`fSingleSessionPerUser=0`, set 2026-11-20): the app windows run in their own RDP session, so the
+desktop session is not signed out. Windows 10 allows one *active* session: opening an app window while you
+use the Looking Glass desktop locks that desktop (its programs keep running); log in there again to go back.
+Tested: app windows open with no sign-out while a disconnected desktop session exists. Not yet tested: with
+the desktop logged in on the Looking Glass window at the same moment.
+The Deskflow client inside Windows runs in the desktop session: app windows get the Mac mouse through the
+laptop (they are normal Linux windows).
 
 ## Setup
 ### Windows (done from Linux with `wexec win10-gpu '<PowerShell>'`, no clicks)
 Values from WinApps `oem/RDPApps.reg` plus the GPU policy:
 ```
 HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server                         fDenyTSConnections = 0
+HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server                         fSingleSessionPerUser = 0   (apps in their own session, no sign-out)
 HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp     UserAuthentication = 1   (NLA)
 HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList  fDisabledAllowList = 1
 HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services                 fAllowUnlistedRemotePrograms = 1

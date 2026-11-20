@@ -15,6 +15,7 @@ install -m 755 laptop/host/gtx-run /usr/local/bin/gtx-run
 # Apply to the running session too (new apps and restarted services); a log out/in applies it everywhere.
 [ -n "${SUDO_USER:-}" ] && sudo -u "$SUDO_USER" XDG_RUNTIME_DIR=/run/user/$(id -u "$SUDO_USER") systemctl --user daemon-reload 2>/dev/null || true
 install -m 755 laptop/host/vm-switch/vm-switch /usr/local/bin/vm-switch
+install -m 755 laptop/host/winapps/winapps-sync /usr/local/bin/winapps-sync   # Windows apps -> app grid
 install -m 644 laptop/host/vm-switch/vm-switch.desktop /usr/local/share/applications/vm-switch.desktop
 install -m 644 laptop/host/vm-switch/local.kvm.gpu-mode.policy /usr/share/polkit-1/actions/local.kvm.gpu-mode.policy
 # Refresh Nitro Control too when it is installed (same GTX fix: draws on the Intel iGPU only).
