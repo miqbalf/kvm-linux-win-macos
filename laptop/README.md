@@ -50,6 +50,7 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | [docs/05-lessons-learned.md](docs/05-lessons-learned.md) | What broke and why (read before changing anything) |
 | [docs/06-open-items.md](docs/06-open-items.md) | Not done yet, ideas |
 | [docs/07-fan-and-rgb.md](docs/07-fan-and-rgb.md) | NitroSense on Linux: fans, 4-zone keyboard RGB, battery limit |
+| [docs/09-windows-apps.md](docs/09-windows-apps.md) | Windows apps as their own Linux windows (WinApps, like Coherence) |
 | [docs/08-share-keyboard-mouse.md](docs/08-share-keyboard-mouse.md) | Use a Mac's keyboard and mouse on the laptop (Deskflow) |
 
 ## Files
@@ -62,6 +63,7 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | `host/touchpad-bridge` | touchpad as a tap-to-click mouse for macOS |
 | `host/nitrosense/` | fan/RGB driver install (linuwu_sense, DKMS), `nitro` command, Nitro Control app |
 | `host/session/`, `host/gtx-run` | desktop draws on Intel only (GTX always free for Windows); `gtx-run <app>` for the GTX in Linux |
+| `host/winapps/` | WinApps setup (Windows apps as Linux windows) |
 | `host/wexec` | run PowerShell in a Windows VM from Linux (QEMU guest agent) |
 | `host/libvirt-hooks/qemu` | auto return to Linux when a passthrough VM stops |
 | `host/udev/`, `host/systemd/`, `host/tmpfiles/` | disk name, touchpad, GNOME keeps off the GTX, Looking Glass shared memory |
