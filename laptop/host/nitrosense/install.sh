@@ -21,7 +21,10 @@ sudo -u "$USER_NAME" git -C "$SRC" fetch -q origin
 sudo -u "$USER_NAME" git -C "$SRC" checkout -q "$COMMIT"
 # Upstream script: dkms add/build/install, blacklists acer_wmi, modules-load.d, linuwu_sense.service,
 # group linuwu_sense (+ the user) and tmpfiles.d permissions for the sysfs files.
-SUDO_USER=$USER_NAME bash "$SRC/scripts/install-dkms.sh"
+# Its last step (modinfo .../linuwu_sense.ko) fails on CachyOS, which installs .ko.zst: check DKMS instead.
+SUDO_USER=$USER_NAME bash "$SRC/scripts/install-dkms.sh" || true
+dkms status linuwu_sense | grep -q installed || { echo "ERROR: DKMS build/install failed"; exit 1; }
+lsmod | grep -q '^linuwu_sense' || { echo "ERROR: linuwu_sense not loaded"; exit 1; }
 install -m 755 laptop/host/nitrosense/nitro /usr/local/bin/nitro
 install -m 755 laptop/host/nitrosense/nitro-control /usr/local/bin/nitro-control
 install -m 644 laptop/host/nitrosense/nitro-control.desktop /usr/local/share/applications/nitro-control.desktop
