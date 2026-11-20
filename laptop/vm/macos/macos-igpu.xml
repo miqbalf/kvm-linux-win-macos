@@ -33,7 +33,7 @@
     </disk>
     <!-- Same copy-on-write overlay as the `macos` domain; /dev/hackintosh-disk (udev name) is only read. -->
     <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' cache='none'/>
+      <driver name='qemu' type='qcow2' cache='writeback'/>
       <source file='/var/lib/libvirt/images/macos/nvme1-overlay.qcow2'/>
       <backingStore type='block'><format type='raw'/><source dev='/dev/hackintosh-disk'/></backingStore>
       <target dev='sdb' bus='sata'/>

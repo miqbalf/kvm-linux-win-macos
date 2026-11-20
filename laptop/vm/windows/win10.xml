@@ -37,7 +37,7 @@
     <emulator>/usr/bin/qemu-system-x86_64</emulator>
     <!-- System disk on the CachyOS NVMe (qcow2, grows on demand). virtio: load viostor from the virtio-win CD during setup. -->
     <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap'/>
+      <driver name='qemu' type='qcow2' cache='writeback' io='threads' discard='unmap'/>
       <source file='/var/lib/libvirt/images/win10/win10.qcow2'/>
       <target dev='vda' bus='virtio'/>
       <boot order='1'/>

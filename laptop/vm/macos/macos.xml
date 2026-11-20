@@ -32,7 +32,7 @@
          NEVER attach the disk directly and never boot the Hackintosh natively while the
          overlay exists: a native boot changes the backing disk and invalidates the overlay
          (recreate with: qemu-img create -f qcow2 -b /dev/hackintosh-disk -F raw overlay.qcow2). -->
-    <disk type="file" device="disk"><driver name="qemu" type="qcow2" cache='none'/><source file="/var/lib/libvirt/images/macos/nvme1-overlay.qcow2"/><backingStore type="block"><format type="raw"/><source dev="/dev/hackintosh-disk"/></backingStore><target dev="sdb" bus="sata"/></disk>
+    <disk type="file" device="disk"><driver name="qemu" type="qcow2" cache='writeback'/><source file="/var/lib/libvirt/images/macos/nvme1-overlay.qcow2"/><backingStore type="block"><format type="raw"/><source dev="/dev/hackintosh-disk"/></backingStore><target dev="sdb" bus="sata"/></disk>
     <!-- vmxnet3 + built-in=01 DeviceProperty in the VM OpenCore config (desktop lesson) -->
     <interface type='network'>
       <mac address='52:54:00:aa:bb:61'/>
