@@ -18,6 +18,10 @@ case "$op" in
     # panel back to the host. Detached, because gpu-mode calls virsh.
     if [ "$vm" = macos-igpu ] && [ "$(basename "$(readlink /sys/bus/pci/devices/0000:00:02.0/driver)")" = vfio-pci ]; then
       systemd-run --quiet --collect --unit=gpu-mode-autohost --on-active=2 /usr/local/sbin/gpu-mode host || true
+    fi
+    # Windows on the GTX stopped (shut down inside Windows, crash): GTX back to nvidia.
+    if [ "$vm" = win10-gpu ] && [ "$(basename "$(readlink /sys/bus/pci/devices/0000:01:00.0/driver)")" = vfio-pci ]; then
+      systemd-run --quiet --collect --unit=gpu-mode-autowinoff --on-active=2 /usr/local/sbin/gpu-mode win-off || true
     fi ;;
 esac
 exit 0

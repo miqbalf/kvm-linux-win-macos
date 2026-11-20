@@ -1,0 +1,26 @@
+#!/bin/bash
+# win-gpu - Windows on the GTX 1650 in a Looking Glass window (run as the desktop user).
+#   win-gpu          start win10-gpu if needed (asks for the password), then open the window
+#   win-gpu stop     shut Windows down; the GTX goes back to the host
+# Closing the window does not stop Windows: run `win-gpu` again to reopen it.
+set -uo pipefail
+VM=win10-gpu
+note() { notify-send -a "Windows (GTX)" "$1" 2>/dev/null; echo "$1"; }
+root() { if [ -t 0 ]; then sudo "$@"; else pkexec "$@"; fi; }
+running() { [ "$(virsh -c qemu:///system domstate $VM 2>/dev/null)" = running ]; }
+
+case "${1:-start}" in
+  stop)
+    running || { note "Windows is not running"; exit 0; }
+    note "Shutting Windows down, the GTX returns to Linux"
+    pkill -u "$USER" -f looking-glass-client
+    root /usr/local/sbin/gpu-mode win-off ;;
+  start)
+    if ! running; then
+      note "Starting Windows on the GTX 1650 (about 30 s)"
+      root /usr/local/sbin/gpu-mode win || { note "Windows did not start: journalctl -t gpu-mode"; exit 1; }
+    fi
+    pgrep -u "$USER" -f looking-glass-client >/dev/null && { note "Looking Glass is already open"; exit 0; }
+    exec looking-glass-client ;;
+  *) echo "usage: win-gpu [start|stop]"; exit 2 ;;
+esac

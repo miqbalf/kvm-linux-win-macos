@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Windows (GTX 1650)
+Comment=Start Windows on the GTX 1650 and show it in a Looking Glass window
+Exec=/usr/local/bin/win-gpu
+Icon=computer
+Categories=System;Emulator;
+Actions=stop;
+
+[Desktop Action stop]
+Name=Shut down Windows
+Exec=/usr/local/bin/win-gpu stop

@@ -1,6 +1,8 @@
 # Laptop host: Acer Nitro AN515-55 on CachyOS
 
 Windows 10 and macOS (the laptop's own Hackintosh disk) as KVM guests on a hybrid-GPU laptop.
+Windows can run with the GTX 1650 passed through, shown in a Looking Glass window on the Linux desktop
+(`win10-gpu`); Linux keeps the panel.
 macOS can run two ways: in a window with a virtual display (`macos`), or full screen on the laptop's
 own panel with the Intel iGPU passed through (`macos-igpu`, Metal 3).
 
@@ -16,7 +18,8 @@ own panel with the Intel iGPU passed through (`macos-igpu`, Metal 3).
 sudo bash laptop/host/01-host-setup.sh   # packages, libvirt, ufw, udev, images, define VMs (takes a snapshot first)
 sudo bash laptop/host/02-verify.sh       # health checks, run after every update/reboot
 ```
-Windows needs an installer ISO at `/var/lib/libvirt/images/win10/win10.iso` (not downloaded by the script).
+Windows installs from a copy of a Windows USB stick at `/var/lib/libvirt/images/win10/win10-installer.img`
+(`dd if=/dev/sdX of=... bs=4M`; not downloaded by the script). Log out of GNOME once after setup.
 macOS on the panel needs a one-time image build, see "macOS on the laptop panel: one-time build".
 
 ## Daily use
@@ -51,14 +54,64 @@ Rules:
 - `macos` and `macos-igpu` share one disk overlay: only one of them runs at a time (`gpu-mode` checks).
 - If the panel stays black in Linux after coming back: `sudo gpu-mode host` again, else reboot.
 
-### macOS in a window, Windows
+### Windows on the GTX 1650 (Looking Glass window)
+App grid > **Windows (GTX 1650)**, or in a terminal:
+```
+win-gpu          # moves the GTX to the VM, starts win10-gpu, opens the Looking Glass window
+win-gpu stop     # shuts Windows down; the GTX goes back to Linux
+```
+- First start asks for the password (polkit), then about 30 s to the Windows desktop.
+- **Right Ctrl** captures / releases keyboard and mouse (no Scroll Lock on this laptop).
+  Hold Right Ctrl + F: full screen. Right Ctrl + Q or closing the window: only closes the window;
+  Windows keeps running, `win-gpu` reopens it.
+- Start > Shut down in Windows also returns the GTX to Linux (libvirt hook runs `gpu-mode win-off`).
+- Close programs that use the GTX in Linux first (`gpu-mode win` stops with their names). The GNOME
+  Settings app holds it: close Settings.
+- Same as `sudo gpu-mode win` / `sudo gpu-mode win-off`. Status: `sudo gpu-mode status`.
+- Run PowerShell in the guest from Linux: `wexec win10-gpu 'Get-Date'` (QEMU guest agent).
+- RDP also works: 192.168.122.13.
+
+### macOS in a window, Windows install/rescue
 ```
 sudo virsh start macos      # 192.168.122.11, VNC 127.0.0.1:5902 (virtual display, no Metal)
-sudo virsh start win10      # 192.168.122.13, VNC 127.0.0.1:5903
+sudo virsh start win10      # 192.168.122.13, VNC 127.0.0.1:5903 (no GTX; installer stick image attached)
 sudo virsh shutdown <vm>
 ```
 VNC from another machine: `ssh -L 5902:127.0.0.1:5902 <user>@<laptop>` then open `vnc://127.0.0.1:5902`.
 The VNC password is in `/etc/libvirt/vnc-laptop.pass` (root only). Repo XML keeps `CHANGE_ME`.
+
+## How Windows on the GTX works
+The GTX 1650 has no display of its own on the laptop (it renders for the iGPU; only the HDMI port is wired to it).
+In the VM, a virtual display driver gives Windows a 1920x1080 screen on the GTX; the Looking Glass host app
+copies its frames into shared memory and the Linux client shows them.
+
+| Part | File | Why |
+|---|---|---|
+| Switch | `host/gpu-mode win` / `win-off` | pins PCI power on, unloads nvidia with `rmmod`, moves 01:00.1 then 01:00.0 to `vfio-pci`, starts `win10-gpu`; back: VM off, nvidia reloaded |
+| Auto return | `host/libvirt-hooks/qemu` | when `win10-gpu` stops, runs `gpu-mode win-off` |
+| GNOME keeps off the GTX | `host/udev/63-gtx-no-gnome.rules`, `host/systemd/org.gnome.Shell@wayland.service.d/` | `mutter-device-ignore` + Mesa-only EGL: gnome-shell never opens the card, so it can leave nvidia without a logout |
+| VM | `vm/windows/win10-gpu.xml` | q35/OVMF, same disk and NVRAM as `win10`; GTX with its own VBIOS (`gtx1650.rom`) and Acer subsystem IDs; fake battery SSDT (NVIDIA mobile driver needs one); hidden KVM; 64 MB ivshmem; SPICE 127.0.0.1:5904 for input/audio, no emulated video |
+| Battery | `vm/windows/ssdt-battery.asl` | built with `iasl` by the setup script |
+| Client | `host/looking-glass/` | B7 client build (with a nettle 4 patch), `client.ini`, launcher `host/win-gpu` + menu entry |
+| Shared memory | `host/tmpfiles/looking-glass.conf` | `/dev/shm/looking-glass` owned by the desktop user, group kvm |
+
+### Windows guest: one-time setup (inside `win10-gpu`, over RDP or VNC of `win10`)
+1. Install Windows from the stick image with `sudo virsh start win10` (VNC 5903). Load the virtio storage driver
+   from `virtio-win.iso` if no disk shows.
+2. `virtio-win-guest-tools.exe` from `virtio-win.iso` (drivers + QEMU guest agent). Enable RDP.
+3. Shut down, then `win-gpu` (Windows now has the GTX; the window stays black until steps 4-6 are done; use RDP).
+4. NVIDIA notebook driver for the GTX 1650 from nvidia.com (DCH; 621.24 tested). No Code 43.
+5. Looking Glass host **B7** (must match the client): `looking-glass-host-setup.exe /S`. It also installs the
+   IVSHMEM driver.
+6. Virtual display: **Virtual Display Driver 23.10.20.3** (IddSampleDriver). Newer 24.x/25.x builds need a
+   newer IddCx than Windows 10 has (Code 31). Import its certificate into Local Machine Root and
+   TrustedPublisher, create the device with nefcon:
+   ```
+   nefconc.exe --create-device-node --hardware-id Root\IddSampleDriver --class-name Display --class-guid 4D36E968-E325-11CE-BFC1-08002BE10318
+   nefconc.exe --install-driver --inf-path C:\IddSampleDriver\IddSampleDriver.inf
+   ```
+   `C:\IddSampleDriver\option.txt` = `1` and `1920, 1080, 60` (two lines; only one mode, else Windows
+   picks 640x480). Disable and enable the device after changing it.
 
 ## How macOS on the panel works
 | Part | File | Why |
@@ -117,3 +170,15 @@ with the setup script. Booting the Hackintosh natively invalidates `nvme1-overla
   `Failed to start CPU 01, rebooting` (boot loop). No `-v` for `macos-igpu`.
 - macOS has no PS/2 driver: the VM needs USB keyboard/mouse; the touchpad goes through `touchpad-bridge`.
 - `gpu-mode host | head -1` killed the script mid-switch (SIGPIPE): `trap '' PIPE`.
+
+## Lessons (2026-11-20, Windows on the GTX)
+- `modprobe -r nvidia_drm` fails: it also tries to remove the shared dependency `i915`. Use `rmmod` per module.
+- Unbinding the runtime-suspended GTX HDMI audio (01:00.1) froze the whole host. Pin `power/control=on` on
+  00:01.0, 01:00.0 and 01:00.1 first, unbind the audio function first, each step under `timeout`.
+- gnome-shell opens every DRM card at login and keeps the GTX busy: udev tag `mutter-device-ignore` plus
+  Mesa-only EGL for gnome-shell. Without it the GTX cannot leave nvidia without a logout.
+- Looking Glass client B7 does not build against nettle 4 (`sha1_digest` lost its length argument): patched in
+  `build-client.sh`.
+- Virtual Display Driver 25.x on Windows 10 21H2: Code 31 (IddCx too old). 23.10.20.3 works.
+- With several modes in `option.txt`, Windows started at 640x480 (big, blurry window). Only 1920x1080 listed now.
+- The laptop has no Scroll Lock: Looking Glass escape key is Right Ctrl.

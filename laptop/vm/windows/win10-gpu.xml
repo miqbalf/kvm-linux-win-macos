@@ -1,0 +1,111 @@
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+  <!-- Windows 10 with the laptop's GTX 1650 Mobile passed through. Linux keeps the panel (Intel iGPU);
+       Windows shows in a Looking Glass window on the Linux desktop.
+       Start ONLY with `gpu-mode win` (moves the GTX from nvidia to vfio-pci on demand). Never bind the
+       GTX to vfio-pci at boot (that blacked out the laptop, 2026-11-19).
+       Same disk as the `win10` domain (install/rescue with a virtual GPU): only one of them runs at a time.
+       No emulated display: view with looking-glass-client, fallback RDP to 192.168.122.13. -->
+  <name>win10-gpu</name>
+  <uuid>77c1f6e2-3b2a-4c4e-9a1f-2d8b6a5c9d05</uuid>
+  <memory unit='GiB'>12</memory>
+  <currentMemory unit='GiB'>12</currentMemory>
+  <vcpu placement='static'>6</vcpu>
+  <os firmware='efi'>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <loader readonly='yes' type='pflash'>/usr/share/edk2/x64/OVMF_CODE.4m.fd</loader>
+    <!-- Same NVRAM as `win10`, so the Windows Boot Manager entry is found. -->
+    <nvram template='/usr/share/edk2/x64/OVMF_VARS.4m.fd'>/var/lib/libvirt/qemu/nvram/win10_VARS.fd</nvram>
+  </os>
+  <features>
+    <acpi/><apic/>
+    <hyperv mode='custom'>
+      <relaxed state='on'/><vapic state='on'/><spinlocks state='on' retries='8191'/>
+      <vpindex state='on'/><runtime state='on'/><synic state='on'/><stimer state='on'/>
+      <reset state='on'/><frequencies state='on'/><tlbflush state='on'/><ipi state='on'/>
+      <vendor_id state='on' value='kvmlaptop01'/>
+    </hyperv>
+    <kvm><hidden state='on'/></kvm>
+    <vmport state='off'/>
+    <ioapic driver='kvm'/>
+  </features>
+  <cpu mode='host-passthrough' check='none' migratable='off'>
+    <topology sockets='1' dies='1' cores='3' threads='2'/>
+    <cache mode='passthrough'/>
+  </cpu>
+  <clock offset='localtime'>
+    <timer name='rtc' tickpolicy='catchup'/><timer name='pit' tickpolicy='delay'/>
+    <timer name='hpet' present='no'/><timer name='hypervclock' present='yes'/>
+  </clock>
+  <on_poweroff>destroy</on_poweroff><on_reboot>restart</on_reboot><on_crash>destroy</on_crash>
+  <pm><suspend-to-mem enabled='no'/><suspend-to-disk enabled='no'/></pm>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap'/>
+      <source file='/var/lib/libvirt/images/win10/win10.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+      <boot order='1'/>
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='/var/lib/libvirt/images/win10/virtio-win.iso'/>
+      <target dev='sdb' bus='sata'/>
+      <readonly/>
+    </disk>
+    <interface type='network'>
+      <mac address='52:54:00:aa:bb:63'/>
+      <source network='default'/>
+      <model type='virtio'/>
+    </interface>
+    <!-- GTX 1650 Mobile + its HDMI audio, one multifunction device in the guest.
+         ROM: the card's own legacy VBIOS (read from sysfs; the system BIOS has none for 1f99).
+         The NVIDIA mobile driver also checks the Acer subsystem ID (set in qemu:override). -->
+    <hostdev mode='subsystem' type='pci' managed='no'>
+      <source><address domain='0x0000' bus='0x01' slot='0x00' function='0x0'/></source>
+      <rom file='/var/lib/libvirt/images/win10/gtx1650.rom'/>
+      <alias name='ua-gtx'/>
+      <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x0' multifunction='on'/>
+    </hostdev>
+    <hostdev mode='subsystem' type='pci' managed='no'>
+      <source><address domain='0x0000' bus='0x01' slot='0x00' function='0x1'/></source>
+      <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x1'/>
+    </hostdev>
+    <controller type='pci' index='1' model='pcie-root-port'/>
+    <controller type='usb' model='qemu-xhci' ports='15'/>
+    <!-- Looking Glass: frames from the GTX to the Linux window over 64 MB shared memory
+         (/dev/shm/looking-glass, owner set by host/tmpfiles/looking-glass.conf). -->
+    <shmem name='looking-glass'>
+      <model type='ivshmem-plain'/>
+      <size unit='M'>64</size>
+    </shmem>
+    <!-- SPICE only for Looking Glass input, clipboard and audio; no emulated video. -->
+    <graphics type='spice' autoport='no' port='5904' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
+      <image compression='off'/>
+    </graphics>
+    <channel type='spicevmc'><target type='virtio' name='com.redhat.spice.0'/></channel>
+    <input type='mouse' bus='virtio'/>
+    <input type='keyboard' bus='virtio'/>
+    <input type='tablet' bus='usb'/>
+    <video><model type='none'/></video>
+    <sound model='ich9'><audio id='1'/></sound>
+    <audio id='1' type='spice'/>
+    <!-- QEMU guest agent (virtio-win guest tools): run commands in Windows from the host, clean shutdown. -->
+    <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>
+    <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
+    <memballoon model='none'/>
+  </devices>
+  <qemu:commandline>
+    <!-- Fake battery: the NVIDIA mobile driver stops with Code 43 on a "laptop GPU" without a battery. -->
+    <qemu:arg value='-acpitable'/>
+    <qemu:arg value='file=/var/lib/libvirt/images/win10/ssdt-battery.aml'/>
+  </qemu:commandline>
+  <qemu:override>
+    <qemu:device alias='ua-gtx'>
+      <qemu:frontend>
+        <qemu:property name='x-pci-sub-vendor-id' type='unsigned' value='4133'/>
+        <qemu:property name='x-pci-sub-device-id' type='unsigned' value='5182'/>
+      </qemu:frontend>
+    </qemu:device>
+  </qemu:override>
+</domain>

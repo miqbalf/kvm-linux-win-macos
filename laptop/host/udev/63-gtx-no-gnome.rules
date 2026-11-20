@@ -1,0 +1,4 @@
+# GNOME (mutter) never drives the GTX 1650 (01:00.0), so it can go to the Windows VM without a logout.
+# Cost: Linux shows nothing on the HDMI port (wired to the GTX). CUDA / PRIME offload still work while
+# Windows is off. Takes effect after the next GNOME login.
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", KERNELS=="0000:01:00.0", TAG+="mutter-device-ignore"

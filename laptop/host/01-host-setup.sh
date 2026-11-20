@@ -4,7 +4,8 @@
 #
 # Hard rules (each one broke this laptop before, 2026-11-19):
 #  - never edit /boot/limine.conf, /etc/default/limine, /etc/kernel/cmdline or mkinitcpio.conf
-#  - never blacklist nvidia, never bind the GTX 1650 (01:00.x) to vfio-pci
+#  - never blacklist nvidia, never bind the GTX 1650 (01:00.x) to vfio-pci at boot
+#    (only on demand, `gpu-mode win`, while GNOME does not use the GTX)
 #  - only one display manager (gdm)
 #  - never write to the real Hackintosh disk: the macOS VM uses a qcow2 overlay over /dev/hackintosh-disk
 #    (udev name; /dev/nvmeXn1 numbering swaps between boots on this laptop)
@@ -30,7 +31,8 @@ snapper -c root create -t single -d "before 01-host-setup" --userdata important=
 
 say "2 packages"
 pacman -S --needed --noconfirm qemu-full libvirt edk2-ovmf virt-manager swtpm dnsmasq \
-  python-evdev mtools gnu-efi   # macOS on the panel: touchpad bridge, OpenCore image build
+  python-evdev mtools gnu-efi \
+  acpica   # macOS on the panel: touchpad bridge, OpenCore image build; Windows: iasl for the battery SSDT
 
 say "3 libvirt + NAT network (virtual Ethernet for the VMs, works over host Wi-Fi)"
 systemctl enable --now libvirtd.socket libvirtd
@@ -82,7 +84,7 @@ if [ ! -f "$IMG/win10/virtio-win.iso" ]; then
     https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso \
     || echo "WARN: virtio-win.iso download failed, retry later"
 fi
-[ -f "$IMG/win10/win10.iso" ] || echo "TODO: copy a Windows 10 ISO to $IMG/win10/win10.iso"
+[ -f "$IMG/win10/win10-installer.img" ] || echo "TODO: copy the Windows USB stick: dd if=/dev/sdX of=$IMG/win10/win10-installer.img bs=4M"
 
 say "6 VNC password (kept outside the repo)"
 PASSFILE=/etc/libvirt/vnc-laptop.pass
@@ -98,7 +100,30 @@ for x in laptop/vm/macos/macos.xml laptop/vm/macos/macos-igpu.xml laptop/vm/wind
   sed "s/passwd='[^']*'/passwd='$VNC_PASS'/" "$x" > "$tmp/$(basename "$x")"
   virsh define "$tmp/$(basename "$x")"
 done
-virsh dominfo win10-gpu >/dev/null 2>&1 && virsh undefine win10-gpu --nvram && echo "removed old win10-gpu (GPU passthrough) definition"
+# win10-gpu: same disk and NVRAM as win10, GTX 1650 passed through on demand (gpu-mode win)
+virsh define laptop/vm/windows/win10-gpu.xml
+
+say "8 Windows on the GTX 1650 (Looking Glass window on the Linux desktop)"
+iasl -p "$IMG/win10/ssdt-battery" laptop/vm/windows/ssdt-battery.asl >/dev/null && echo "battery SSDT built"
+if [ ! -s "$IMG/win10/gtx1650.rom" ] && [ "$(basename "$(readlink /sys/bus/pci/devices/0000:01:00.0/driver)")" = nvidia ]; then
+  R=/sys/bus/pci/devices/0000:01:00.0/rom   # the card's own VBIOS; read only
+  echo 1 > $R; cat $R > "$IMG/win10/gtx1650.rom"; echo 0 > $R
+  echo "GTX VBIOS saved ($(stat -c %s "$IMG/win10/gtx1650.rom") bytes)"
+fi
+# GNOME must never open the GTX, else it cannot leave the nvidia driver without a logout.
+install -m 644 laptop/host/udev/63-gtx-no-gnome.rules /etc/udev/rules.d/63-gtx-no-gnome.rules
+install -D -m 644 laptop/host/systemd/org.gnome.Shell@wayland.service.d/10-no-nvidia-egl.conf \
+  /etc/systemd/user/org.gnome.Shell@wayland.service.d/10-no-nvidia-egl.conf
+sed "s/USER/$USER_NAME/" laptop/host/tmpfiles/looking-glass.conf > /etc/tmpfiles.d/looking-glass.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/looking-glass.conf
+command -v looking-glass-client >/dev/null || bash laptop/host/looking-glass/build-client.sh
+UHOME=$(getent passwd "$USER_NAME" | cut -d: -f6)
+install -D -m 644 -o "$USER_NAME" -g "$USER_NAME" laptop/host/looking-glass/client.ini "$UHOME/.config/looking-glass/client.ini"
+install -m 755 laptop/host/win-gpu /usr/local/bin/win-gpu
+install -m 755 laptop/host/wexec /usr/local/bin/wexec
+install -D -m 644 laptop/host/looking-glass/win-gpu.desktop /usr/local/share/applications/win-gpu.desktop
+echo "launcher: 'Windows (GTX 1650)' in the app grid, or win-gpu / win-gpu stop"
+echo "GNOME ignores the GTX after the next login (log out once)"
 
 install -m 755 laptop/host/gpu-mode /usr/local/sbin/gpu-mode
 install -m 755 laptop/host/touchpad-bridge /usr/local/sbin/touchpad-bridge

@@ -2,6 +2,8 @@
 # gpu-mode - switch the laptop's Intel iGPU (00:02.0) between the host and the macOS VM.
 #   sudo gpu-mode mac      stop GDM, bind iGPU to vfio-pci, start macos-igpu (macOS on the laptop panel)
 #   sudo gpu-mode host     stop macos-igpu, give the iGPU back to i915, start GDM
+#   sudo gpu-mode win      give the GTX 1650 to win10-gpu (Linux keeps the panel; view: looking-glass-client)
+#   sudo gpu-mode win-off  stop win10-gpu, GTX 1650 back to nvidia
 #   sudo gpu-mode status
 #   Apple menu > Shut Down in macOS also returns to the host (libvirt hook + watchdog).
 # Runs only on request. Nothing here is persistent: a reboot always returns to host mode.
@@ -73,8 +75,80 @@ flock -w 300 9 || die "another gpu-mode is still running"
 
 status() {
   echo "iGPU $IGPU driver: $(drv)"
+  echo "GTX  $GTX driver: $(pdrv $GTX)"
   echo "gdm: $(systemctl is-active gdm)"
-  for d in macos macos-igpu win10; do echo "VM $d: $(state $d)"; done
+  for d in macos macos-igpu win10 $WVM; do echo "VM $d: $(state $d)"; done
+}
+
+# --- GTX 1650 <-> Windows (win10-gpu). Independent of the iGPU switch above. ---
+# GNOME never opens the GTX (host/udev/63-gtx-no-gnome.rules + gnome-shell EGL drop-in), so the
+# nvidia modules can be unloaded without a logout. Unloading (not unbinding) fails cleanly with
+# "in use" instead of hanging when something still holds the GPU.
+GTX=0000:01:00.0
+GTXA=0000:01:00.1
+WVM=win10-gpu
+pdrv() { local l; l=$(readlink "/sys/bus/pci/devices/$1/driver" 2>/dev/null) && basename "$l" || echo none; }
+NV_MODS="nvidia_drm nvidia_uvm nvidia_modeset nvidia"
+GTXPORT=0000:00:01.0
+# Optimus: the GTX and its HDMI audio runtime-suspend (D3). Unbinding the audio function while it
+# slept froze the whole host (2026-11-20). Keep root port + both functions powered while switching.
+gtx_pin_power() { for d in $GTXPORT $GTX $GTXA; do echo "$1" > /sys/bus/pci/devices/$d/power/control; done; }
+
+gtx_to_host() {
+  for d in $GTX $GTXA; do
+    echo > /sys/bus/pci/devices/$d/driver_override
+    [ "$(pdrv $d)" = vfio-pci ] && echo $d > /sys/bus/pci/drivers/vfio-pci/unbind
+  done
+  modprobe nvidia_drm; modprobe nvidia_uvm
+  for d in $GTX $GTXA; do [ "$(pdrv $d)" = none ] && echo $d > /sys/bus/pci/drivers_probe 2>/dev/null; done
+  gtx_pin_power auto
+  systemctl start nvidia-powerd 2>/dev/null
+  log "GTX back on $(pdrv $GTX), audio on $(pdrv $GTXA)"
+}
+
+to_win() {
+  [ "$(state $WVM)" = running ] && { log "$WVM already running"; return 0; }
+  [ "$(state win10)" = "shut off" ] || die "domain 'win10' is running: it shares the disk, shut it down first"
+  for f in gtx1650.rom ssdt-battery.aml win10.qcow2; do
+    [ -f /var/lib/libvirt/images/win10/$f ] || die "/var/lib/libvirt/images/win10/$f missing (run host/01-host-setup.sh)"
+  done
+  if [ "$(pdrv $GTX)" != vfio-pci ]; then
+    gtx_pin_power on; sleep 1
+    systemctl stop nvidia-powerd 2>/dev/null
+    users=$(fuser /dev/nvidia* 2>/dev/null | xargs)
+    if [ -n "$users" ]; then
+      systemctl start nvidia-powerd 2>/dev/null
+      die "programs still use the GTX, close them first: $(ps -o comm= -p ${users// /,} | sort -u | tr '\n' ' ')"
+    fi
+    for m in $NV_MODS; do
+      lsmod | grep -q "^$m " || continue
+      # rmmod, not modprobe -r: modprobe also tries to drop shared deps (i915) and then reports failure
+      rmmod $m 2>/dev/null || { gtx_to_host; die "cannot unload $m (still in use; was GNOME restarted after installing 63-gtx-no-gnome.rules?)"; }
+    done
+    modprobe vfio-pci
+    # audio first (it keeps snd_hda_intel after nvidia is gone), then GPU, then audio to vfio
+    [ "$(pdrv $GTXA)" = none ] || timeout 20 sh -c "echo $GTXA > /sys/bus/pci/devices/$GTXA/driver/unbind" || { gtx_to_host; die "HDMI audio unbind hung"; }
+    for d in $GTX $GTXA; do
+      echo vfio-pci > /sys/bus/pci/devices/$d/driver_override
+      timeout 20 sh -c "echo $d > /sys/bus/pci/drivers_probe" 2>/dev/null
+    done
+    [ "$(pdrv $GTX)" = vfio-pci ] && [ "$(pdrv $GTXA)" = vfio-pci ] || { gtx_to_host; die "GTX did not bind to vfio-pci"; }
+  fi
+  systemd-tmpfiles --create /etc/tmpfiles.d/looking-glass.conf
+  log "GTX on vfio-pci, starting $WVM"
+  virsh start $WVM || { gtx_to_host; die "virsh start $WVM failed, GTX back to host"; }
+  log "Windows starting. View: win-gpu on the laptop desktop (Looking Glass window)"
+}
+
+to_win_off() {
+  if [ "$(state $WVM)" = running ]; then
+    log "shutting down $WVM"
+    virsh shutdown $WVM >/dev/null
+    for i in $(seq 1 18); do [ "$(state $WVM)" = "shut off" ] && break; sleep 5; done
+    [ "$(state $WVM)" = "shut off" ] || { log "forcing off"; virsh destroy $WVM >/dev/null; }
+  fi
+  [ "$(pdrv $GTX)" = vfio-pci ] && gtx_to_host
+  true
 }
 
 to_mac() {
@@ -151,6 +225,8 @@ to_host() {
 case "${1:-status}" in
   mac) to_mac; status ;;
   host) to_host; status ;;
+  win) to_win; status ;;
+  win-off) to_win_off; status ;;
   status) status ;;
-  *) echo "usage: gpu-mode mac|host|status"; exit 2 ;;
+  *) echo "usage: gpu-mode mac|host|win|win-off|status"; exit 2 ;;
 esac

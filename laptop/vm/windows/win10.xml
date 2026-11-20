@@ -1,6 +1,6 @@
 <domain type='kvm'>
-  <!-- Windows 10 on the laptop. Virtual GPU only: the GTX 1650 stays with the host.
-       (Binding the GTX 1650 to vfio-pci at boot blacked out the laptop display, 2026-11-19.)
+  <!-- Windows 10 on the laptop with a virtual GPU: install and rescue. Daily use with the GTX 1650:
+       domain win10-gpu (same disk), started by `gpu-mode win`. Only one of the two runs at a time.
        Console: VNC on 127.0.0.1:5903, reach it through an SSH tunnel. -->
   <name>win10</name>
   <uuid>77c1f6e2-3b2a-4c4e-9a1f-2d8b6a5c9d03</uuid>
@@ -42,11 +42,13 @@
       <target dev='vda' bus='virtio'/>
       <boot order='1'/>
     </disk>
-    <!-- Windows installer ISO: put it at this path (not downloaded by the scripts). -->
-    <disk type='file' device='cdrom'>
+    <!-- Windows installer: a byte copy of a Windows USB stick (read-only USB disk in the VM):
+         sudo dd if=/dev/sdX of=/var/lib/libvirt/images/win10/win10-installer.img bs=4M
+         Remove this disk after setup. With an ISO instead: device='cdrom', bus='sata', source win10.iso. -->
+    <disk type='file' device='disk'>
       <driver name='qemu' type='raw'/>
-      <source file='/var/lib/libvirt/images/win10/win10.iso'/>
-      <target dev='sda' bus='sata'/>
+      <source file='/var/lib/libvirt/images/win10/win10-installer.img'/>
+      <target dev='sdc' bus='usb'/>
       <readonly/>
       <boot order='2'/>
     </disk>
@@ -72,6 +74,8 @@
     <video><model type='virtio' heads='1' primary='yes'/></video>
     <sound model='ich9'/>
     <audio id='1' type='none'/>
+    <!-- QEMU guest agent (virtio-win guest tools): run commands in Windows from the host, clean shutdown. -->
+    <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
     <memballoon model='virtio'/>
   </devices>
