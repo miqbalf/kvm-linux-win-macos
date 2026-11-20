@@ -44,3 +44,11 @@ Read before changing boot, GPU or VM settings.
   handshake 50+ times with 0 replies (usbmon). Other USB port: same.
 - Conclusion: the dongle is dead (likely a failed firmware update from the old Windows 11 install). Stock
   libfprint restored. Do not spend more time on it; buy a supported reader (libfprint list) if needed.
+
+## 2026-11-20: fans and keyboard RGB
+- Upstream Linuwu-Sense does not build on kernel 7.2+ (sysfs API change); the AN515-55 patch fork does, and adds
+  working 4-zone RGB payloads for this model.
+- The driver's saved keyboard state is already scaled by brightness: colors dim at every reboot. Restore the
+  original values at login instead (`nitro restore`).
+- Its tmpfiles permissions run before the module loads at boot: re-run them from `linuwu_sense.service`.
+- `systemctl restart linuwu_sense.service` unloads the module (ExecStop=rmmod).

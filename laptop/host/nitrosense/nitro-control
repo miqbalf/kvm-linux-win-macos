@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+# Nitro Control - small NitroSense-like app for the Acer Nitro AN515-55 (GTK4 + libadwaita).
+# Fans (auto / max / custom), 4-zone keyboard RGB (static colors or effects), 80% battery limit,
+# live fan RPM and temperatures. Talks to the linuwu_sense module through sysfs.
+# Write access: group linuwu_sense (set up by laptop/host/nitrosense/install.sh, needs one re-login);
+# without it, each change asks for the password (pkexec).
+import glob, os, subprocess, sys
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, GLib, Gtk
+
+B = "/sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi"
+NS, KB = B + "/nitro_sense", B + "/four_zoned_kb"
+EFFECTS = ["Static", "Breathing", "Neon", "Wave", "Shifting", "Zoom", "Meteor", "Twinkling"]
+NO_COLOR = {2, 3}          # neon and wave pick their own colors
+NO_DIRECTION = {1, 2, 5, 6, 7}
+
+
+def rd(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def wr(path, value):
+    try:
+        with open(path, "w") as f:
+            f.write(value)
+        return True
+    except PermissionError:
+        r = subprocess.run(["pkexec", "tee", path], input=value, text=True, capture_output=True)
+        return r.returncode == 0
+
+
+STATE = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "nitro", "state")
+
+
+def save(key, value):
+    """Same file as the `nitro` command; `nitro restore` re-applies it at login."""
+    lines = [l for l in rd(STATE).splitlines() if l and not l.startswith(key + " ")]
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE + ".new", "w") as f:
+        f.write("\n".join(lines + [key + " " + value]) + "\n")
+    os.replace(STATE + ".new", STATE)
+
+
+def rgba_hex(c):
+    return "%02x%02x%02x" % (round(c.red * 255), round(c.green * 255), round(c.blue * 255))
+
+
+def hex_rgba(h):
+    c = Gdk.RGBA()
+    c.parse("#" + h)
+    return c
+
+
+class Win(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Nitro Control", default_width=460, default_height=760)
+        self.toasts = Adw.ToastOverlay()
+        tv = Adw.ToolbarView()
+        tv.add_top_bar(Adw.HeaderBar())
+        page = Adw.PreferencesPage()
+        tv.set_content(page)
+        self.toasts.set_child(tv)
+        self.set_content(self.toasts)
+        if not os.path.isdir(B):
+            g = Adw.PreferencesGroup(title="Driver not loaded",
+                                     description="linuwu_sense is not loaded. Run: sudo modprobe linuwu_sense")
+            page.add(g)
+            return
+        self.hw = (glob.glob(B + "/hwmon/hwmon*") or [""])[0]
+
+        # Fans
+        g = Adw.PreferencesGroup(title="Fans and temperature")
+        page.add(g)
+        self.live = Adw.ActionRow(title="Now")
+        g.add(self.live)
+        self.fan_mode = Adw.ComboRow(title="Fan mode", model=Gtk.StringList.new(["Auto", "Max", "Custom"]))
+        g.add(self.fan_mode)
+        self.cpu = self.slider(g, "CPU fan %", 1, 100, 50)
+        self.gpu = self.slider(g, "GPU fan %", 1, 100, 50)
+        cur = rd(NS + "/fan_speed", "0,0").split(",")
+        if cur == ["0", "0"]:
+            self.fan_mode.set_selected(0)
+        elif cur == ["100", "100"]:
+            self.fan_mode.set_selected(1)
+        else:
+            self.fan_mode.set_selected(2)
+            self.cpu[1].set_value(int(cur[0])); self.gpu[1].set_value(int(cur[1]))
+        self.fan_mode.connect("notify::selected", lambda *a: (self.fan_sensitive(), self.apply_fan()))
+        for row, sc in (self.cpu, self.gpu):
+            sc.connect("value-changed", lambda *a: self.fan_mode.get_selected() == 2 and self.debounce("fan", self.apply_fan))
+        self.fan_sensitive()
+
+        # Keyboard
+        g = Adw.PreferencesGroup(title="Keyboard lighting")
+        page.add(g)
+        self.effect = Adw.ComboRow(title="Effect", model=Gtk.StringList.new(EFFECTS))
+        g.add(self.effect)
+        saved = dict(l.split(" ", 1) for l in rd(STATE).splitlines() if " " in l)
+        kb_saved = saved.get("kb", "").split(" ")
+        zones = (kb_saved[1] if kb_saved[0] == "per_zone_mode" and len(kb_saved) > 1
+                 else rd(KB + "/per_zone_mode", "ffffff,ffffff,ffffff,ffffff,100")).split(",")
+        self.zone_btns, self.zone_rows = [], []
+        for i in range(4):
+            row = Adw.ActionRow(title=f"Zone {i + 1}", subtitle=["left", "middle left", "middle right", "right"][i])
+            b = Gtk.ColorDialogButton(dialog=Gtk.ColorDialog(with_alpha=False), valign=Gtk.Align.CENTER)
+            b.set_rgba(hex_rgba(zones[i] if zones[i] != "000000" else "ffffff"))
+            b.connect("notify::rgba", lambda *a: self.debounce("kb", self.apply_kb))
+            row.add_suffix(b)
+            g.add(row)
+            self.zone_btns.append(b); self.zone_rows.append(row)
+        self.same = Adw.SwitchRow(title="All zones same color", active=len(set(zones[:4])) == 1)
+        self.same.connect("notify::active", lambda *a: (self.kb_sensitive(), self.apply_kb()))
+        g.add(self.same)
+        self.color_row = Adw.ActionRow(title="Effect color")
+        self.color = Gtk.ColorDialogButton(dialog=Gtk.ColorDialog(with_alpha=False), valign=Gtk.Align.CENTER)
+        self.color.set_rgba(hex_rgba("ff0000"))
+        self.color.connect("notify::rgba", lambda *a: self.debounce("kb", self.apply_kb))
+        self.color_row.add_suffix(self.color)
+        g.add(self.color_row)
+        self.bright = self.slider(g, "Brightness %", 0, 100, int(zones[4]) if len(zones) > 4 else 100)
+        self.speed = self.slider(g, "Speed", 0, 9, 4)
+        self.direction = Adw.ComboRow(title="Direction", model=Gtk.StringList.new(["Right to left", "Left to right"]))
+        g.add(self.direction)
+        eff = rd(KB + "/four_zone_mode", "0").split(",")
+        self.effect.set_selected(int(eff[0]) if eff[0].isdigit() and int(eff[0]) < 8 else 0)
+        for w in (self.bright[1], self.speed[1]):
+            w.connect("value-changed", lambda *a: self.debounce("kb", self.apply_kb))
+        self.effect.connect("notify::selected", lambda *a: (self.kb_sensitive(), self.apply_kb()))
+        self.direction.connect("notify::selected", lambda *a: self.apply_kb())
+        off = Adw.ButtonRow(title="Lights off")
+        off.connect("activated", lambda *a: wr(KB + "/per_zone_mode", "000000,000000,000000,000000,0")
+                    and save("kb", "per_zone_mode 000000,000000,000000,000000,0") is None and self.toast("Keyboard lights off"))
+        g.add(off)
+        self.kb_sensitive()
+
+        # Battery
+        g = Adw.PreferencesGroup(title="Battery")
+        page.add(g)
+        self.limit = Adw.SwitchRow(title="Stop charging at 80%", subtitle="Longer battery life when mostly on AC",
+                                   active=rd(NS + "/battery_limiter") == "1")
+        self.limit.connect("notify::active", lambda r, *a: wr(NS + "/battery_limiter", "1" if r.get_active() else "0"))
+        g.add(self.limit)
+
+        self.timers = {}
+        self.refresh()
+        GLib.timeout_add_seconds(2, self.refresh)
+
+    def slider(self, group, title, lo, hi, val):
+        row = Adw.ActionRow(title=title)
+        sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, 1)
+        sc.set_value(val); sc.set_hexpand(True); sc.set_draw_value(True); sc.set_size_request(200, -1)
+        row.add_suffix(sc)
+        group.add(row)
+        return row, sc
+
+    def toast(self, text):
+        self.toasts.add_toast(Adw.Toast(title=text, timeout=2))
+
+    def debounce(self, key, fn):
+        if key in self.timers:
+            GLib.source_remove(self.timers[key])
+        self.timers[key] = GLib.timeout_add(300, lambda: (self.timers.pop(key, None), fn(), False)[-1])
+
+    def fan_sensitive(self):
+        custom = self.fan_mode.get_selected() == 2
+        for row, _ in (self.cpu, self.gpu):
+            row.set_sensitive(custom)
+
+    def apply_fan(self):
+        m = self.fan_mode.get_selected()
+        v = {0: "0,0", 1: "100,100"}.get(m, "%d,%d" % (self.cpu[1].get_value(), self.gpu[1].get_value()))
+        if wr(NS + "/fan_speed", v):
+            save("fan", v)
+            self.toast("Fans: " + ["auto", "max", v.replace(",", "% / ") + "%"][m])
+
+    def kb_sensitive(self):
+        e = self.effect.get_selected()
+        static = e == 0
+        for i, row in enumerate(self.zone_rows):
+            row.set_visible(static and (i == 0 or not self.same.get_active()))
+        self.zone_rows[0].set_title("Color" if static and self.same.get_active() else "Zone 1")
+        self.same.set_visible(static)
+        self.color_row.set_visible(not static and e not in NO_COLOR)
+        self.speed[0].set_visible(not static)
+        self.direction.set_visible(not static and e not in NO_DIRECTION)
+
+    def apply_kb(self):
+        e = self.effect.get_selected()
+        br = int(self.bright[1].get_value())
+        if e == 0:
+            cols = [rgba_hex(b.get_rgba()) for b in self.zone_btns]
+            if self.same.get_active():
+                cols = [cols[0]] * 4
+            v = ",".join(cols) + ",%d" % br
+            ok = wr(KB + "/per_zone_mode", v)
+            ok and save("kb", "per_zone_mode " + v)
+        else:
+            c = self.color.get_rgba()
+            rgb = [round(c.red * 255), round(c.green * 255), round(c.blue * 255)]
+            if e in NO_COLOR:
+                rgb = [0, 0, 0]
+            v = "%d,%d,%d,%d,%d,%d,%d" % (e, self.speed[1].get_value(), br, self.direction.get_selected() + 1, *rgb)
+            ok = wr(KB + "/four_zone_mode", v)
+            ok and save("kb", "four_zone_mode " + v)
+        if not ok:
+            self.toast("No permission: log out and in once (group linuwu_sense)")
+
+    def refresh(self):
+        h = self.hw
+        t = lambda n: int(rd(f"{h}/temp{n}_input", "0") or 0) // 1000
+        self.live.set_subtitle(
+            f"CPU fan {rd(h + '/fan1_input', '?')} rpm   GPU fan {rd(h + '/fan2_input', '?')} rpm\n"
+            f"CPU {t(1)} °C   system {t(3)} °C")
+        return True
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="local.nitro.Control")
+
+    def do_activate(self):
+        (self.props.active_window or Win(self)).present()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

@@ -6,6 +6,7 @@ Linux, macOS and Windows on one hybrid-GPU laptop, without rebooting:
   on the laptop panel, Metal 3 (`gpu-mode mac`).
 - **Windows 10** runs as a VM with the **GTX 1650** passed through, shown in a Looking Glass window on the
   Linux desktop (`win-gpu`).
+- **Fans, keyboard RGB, battery limit** like Acer NitroSense: app **Nitro Control** or `nitro` (Linux only).
 
 This folder is separate from the desktop server setup in the repo root (`host/`, `vm/`, `docs/`): nothing here
 is shared with it.
@@ -21,6 +22,8 @@ is shared with it.
 | macOS | Windows | go back to Linux first, then `win-gpu` | |
 | anything stuck | Linux | hold the power button; every boot starts in Linux | |
 
+Fans / RGB: app grid > **Nitro Control**, or `nitro fan max`, `nitro rgb red`, `nitro effect breath red`.
+
 Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 
 ## Docs
@@ -32,6 +35,7 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | [docs/04-windows.md](docs/04-windows.md) | Windows on the GTX: use, how it works, guest setup |
 | [docs/05-lessons-learned.md](docs/05-lessons-learned.md) | What broke and why (read before changing anything) |
 | [docs/06-open-items.md](docs/06-open-items.md) | Not done yet, ideas |
+| [docs/07-fan-and-rgb.md](docs/07-fan-and-rgb.md) | NitroSense on Linux: fans, 4-zone keyboard RGB, battery limit |
 
 ## Files
 | Path | What |
@@ -40,6 +44,7 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | `host/gpu-mode` | the switch: `mac`, `host`, `win`, `win-off`, `status` |
 | `host/win-gpu`, `host/looking-glass/` | Windows launcher, menu entry, Looking Glass client build + config |
 | `host/touchpad-bridge` | touchpad as a tap-to-click mouse for macOS |
+| `host/nitrosense/` | fan/RGB driver install (linuwu_sense, DKMS), `nitro` command, Nitro Control app |
 | `host/wexec` | run PowerShell in a Windows VM from Linux (QEMU guest agent) |
 | `host/libvirt-hooks/qemu` | auto return to Linux when a passthrough VM stops |
 | `host/udev/`, `host/systemd/`, `host/tmpfiles/` | disk name, touchpad, GNOME keeps off the GTX, Looking Glass shared memory |

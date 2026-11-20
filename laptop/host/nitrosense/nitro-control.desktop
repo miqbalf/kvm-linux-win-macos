@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Nitro Control
+Comment=Fans, keyboard RGB and battery limit (NitroSense-like)
+Exec=/usr/local/bin/nitro-control
+Icon=preferences-system
+Categories=Settings;HardwareSettings;
+StartupWMClass=local.nitro.Control

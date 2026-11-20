@@ -47,6 +47,9 @@ What the setup script installs:
    [04-windows.md](04-windows.md).
 3. `win-gpu`.
 
+## 5. Fans and keyboard RGB (optional)
+`sudo bash laptop/host/nitrosense/install.sh`, log out and in once. See [07-fan-and-rgb.md](07-fan-and-rgb.md).
+
 ## Not in the repo (never commit)
 OpenCore images and configs with SMBIOS serials, the Intel GOP driver, the GTX VBIOS, disk images, the VNC
 password, the Windows account and unattend file. See `laptop/.gitignore`.

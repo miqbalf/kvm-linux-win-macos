@@ -1,0 +1,81 @@
+#!/bin/bash
+# nitro - NitroSense-like fan, keyboard RGB and battery control for the Acer Nitro AN515-55.
+# Needs the linuwu_sense module (laptop/host/nitrosense/install.sh). Members of group linuwu_sense
+# can run it without sudo (after one re-login); otherwise use sudo.
+#   nitro                       status: fan RPM, temperatures, fan mode, RGB, battery limit
+#   nitro fan auto|max          fan curve by the EC (auto) or both fans at 100%
+#   nitro fan <cpu%> <gpu%>     fixed speed per fan, 1-100 (0 = auto)
+#   nitro rgb <color> [<c2> <c3> <c4>] [brightness%]   static colors, zone 1 = left .. zone 4 = right
+#   nitro rgb off
+#   nitro effect <breath|neon|wave|shift|zoom|meteor|twinkle> [color] [speed 0-9] [brightness%] [dir 1|2]
+#   nitro battery-limit on|off  stop charging at 80% (on) to save the battery on AC
+#   nitro restore               re-apply the last fan + keyboard setting (runs at login)
+# Settings are saved in ~/.config/nitro/state. The driver's own saved colors get dimmer after each
+# reboot (it stores them already scaled by brightness), so the login restore re-sends the original values.
+# Colors: hex RRGGBB or red, green, blue, white, cyan, magenta, yellow, orange, purple, pink.
+set -euo pipefail
+B=/sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi
+[ -d "$B" ] || { echo "linuwu_sense not loaded (sudo modprobe linuwu_sense)"; exit 1; }
+NS=$B/nitro_sense KB=$B/four_zoned_kb H=$(echo $B/hwmon/hwmon*)
+
+put() { if [ -w "$1" ]; then echo "$2" > "$1"; else echo "$2" | sudo tee "$1" >/dev/null; fi; }
+STATE=${XDG_CONFIG_HOME:-$HOME/.config}/nitro/state
+# save <name> <value>: keep one line per setting (fan, kb). kb = "per_zone_mode V" or "four_zone_mode V".
+save() { mkdir -p "${STATE%/*}"; { grep -v "^$1 " "$STATE" 2>/dev/null || true; echo "$1 $2"; } > "$STATE.new"; mv "$STATE.new" "$STATE"; }
+setfan() { put $NS/fan_speed "$1"; save fan "$1"; }
+setkb() { put "$KB/$1" "$2"; save kb "$1 $2"; }
+hex() {
+  case "${1,,}" in
+    red) echo ff0000;; green) echo 00ff00;; blue) echo 0000ff;; white) echo ffffff;; cyan) echo 00ffff;;
+    magenta) echo ff00ff;; yellow) echo ffff00;; orange) echo ff6000;; purple) echo 8000ff;; pink) echo ff4080;;
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) echo "${1,,}";;
+    *) echo "bad color: $1" >&2; exit 2;;
+  esac
+}
+pct() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -le 100 ] || { echo "not 0-100: $1" >&2; exit 2; }; echo "$1"; }
+
+fans() {
+  local f; f=$(cat $NS/fan_speed)
+  echo "fans:   CPU $(cat $H/fan1_input) rpm, GPU $(cat $H/fan2_input) rpm  (mode: $([ "$f" = 0,0 ] && echo auto || echo "$f %"))"
+}
+batt() { echo "battery limit 80%: $([ "$(cat $NS/battery_limiter)" = 1 ] && echo on || echo off)"; }
+status() {
+  fans
+  echo "temps:  CPU $(( $(cat $H/temp1_input) / 1000 )) C, sys $(( $(cat $H/temp3_input) / 1000 )) C"
+  echo "rgb:    zones $(cat $KB/per_zone_mode)   effect $(cat $KB/four_zone_mode)"
+  batt
+}
+
+case "${1:-status}" in
+  status) status ;;
+  fan)
+    case "${2:-}" in
+      auto) setfan 0,0 ;;
+      max)  setfan 100,100 ;;
+      *)    setfan "$(pct "${2:?cpu%}"),$(pct "${3:?gpu%}")" ;;
+    esac; sleep 3; fans ;;
+  rgb)
+    shift
+    if [ "${1:-}" = off ]; then setkb per_zone_mode 000000,000000,000000,000000,0; exit 0; fi
+    cols=(); br=100
+    for a in "$@"; do if [[ "$a" =~ ^[0-9]{1,3}$ ]]; then br=$(pct "$a"); else cols+=("$(hex "$a")"); fi; done
+    [ ${#cols[@]} -ge 1 ] || { echo "usage: nitro rgb <color> [c2 c3 c4] [brightness]"; exit 2; }
+    while [ ${#cols[@]} -lt 4 ]; do cols+=("${cols[-1]}"); done
+    setkb per_zone_mode "${cols[0]},${cols[1]},${cols[2]},${cols[3]},$br" ;;
+  effect)
+    case "${2:-}" in
+      breath) m=1;; neon) m=2;; wave) m=3;; shift) m=4;; zoom) m=5;; meteor) m=6;; twinkle) m=7;;
+      *) echo "effects: breath neon wave shift zoom meteor twinkle"; exit 2;;
+    esac
+    c=$(hex "${3:-white}"); s=${4:-4}; br=$(pct "${5:-100}"); d=${6:-1}
+    setkb four_zone_mode "$m,$s,$br,$d,$((16#${c:0:2})),$((16#${c:2:2})),$((16#${c:4:2}))" ;;
+  battery-limit)
+    case "${2:-}" in on) put $NS/battery_limiter 1;; off) put $NS/battery_limiter 0;; *) echo "on|off"; exit 2;; esac
+    batt ;;
+  restore)
+    [ -f "$STATE" ] || exit 0
+    while read -r k a b; do
+      case "$k" in fan) put $NS/fan_speed "$a" ;; kb) [ "$a" = per_zone_mode ] || [ "$a" = four_zone_mode ] && put "$KB/$a" "$b" ;; esac
+    done < "$STATE" ;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

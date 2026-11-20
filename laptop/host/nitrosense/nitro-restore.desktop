@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Nitro restore
+Comment=Re-apply the last fan and keyboard RGB setting
+Exec=/usr/local/bin/nitro restore
+NoDisplay=true
+X-GNOME-Autostart-Phase=Applications

@@ -18,6 +18,8 @@
 | Ethernet | Killer E2600 | 08:00.0 | host only |
 | Bluetooth | Apple BCM2046 | USB `05ac:828f` | host only |
 | Webcam | Chicony HD | USB `04f2:b64f` | host |
+| Keyboard RGB | 4-zone backlight, controlled over Acer WMI | | `linuwu_sense` module: `nitro`, Nitro Control |
+| Fans | 2 (CPU, GPU), controlled by the EC over Acer WMI | | `linuwu_sense`: auto / max / fixed % |
 | Keyboard, touchpad | internal (PS/2 keyboard, I2C touchpad) | | host; given to macOS in `gpu-mode mac` (touchpad through `touchpad-bridge`) |
 | Fingerprint dongle | MicroarrayTechnology MAFP | USB `3274:8012` | **dead**: answers nothing on Linux or Windows (see lessons) |
 
@@ -29,6 +31,7 @@
 | Kernel cmdline | `intel_iommu=on iommu=pt` (in `/etc/default/limine`, then `limine-update`) |
 | Desktop | GNOME 51 + GDM 51 (Wayland), Mesa 26.2 |
 | VM stack | QEMU 11.1.3, libvirt 12.9, edk2-ovmf 202608 (`OVMF_CODE.4m.fd`) |
+| Fan / RGB driver | `linuwu_sense` 25.701 (BillyAddlers AN515-55 patch, DKMS), replaces `acer_wmi` |
 | Windows viewer | Looking Glass client B7 (built from source, `host/looking-glass/build-client.sh`) |
 
 ## Guests
