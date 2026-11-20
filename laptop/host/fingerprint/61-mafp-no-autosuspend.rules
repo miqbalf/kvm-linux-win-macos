@@ -1,0 +1,2 @@
+# MicroarrayTechnology MAFP USB fingerprint reader: keep it awake (USB resets / timeouts otherwise).
+ACTION=="add|change", SUBSYSTEM=="usb", ATTR{idVendor}=="3274", ATTR{idProduct}=="8012", TEST=="power/control", ATTR{power/control}="on"
