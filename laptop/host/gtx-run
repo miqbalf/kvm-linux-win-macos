@@ -1,0 +1,10 @@
+#!/bin/sh
+# gtx-run <app> [args] - run one Linux app on the GTX 1650 (PRIME render offload).
+# The desktop session is Intel-only (session/90-gtx-free.conf); this undoes that for one app.
+# While the app runs, `gpu-mode win` refuses (the app holds the GTX): close it before starting Windows.
+[ $# -gt 0 ] || { echo "usage: gtx-run <app> [args]"; exit 2; }
+d=$(readlink /sys/bus/pci/devices/0000:01:00.0/driver 2>/dev/null)
+[ "${d##*/}" = nvidia ] || { echo "the GTX is not on the nvidia driver (Windows has it?): ${d##*/}"; exit 1; }
+unset __EGL_VENDOR_LIBRARY_FILENAMES VK_DRIVER_FILES
+export __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only
+exec "$@"

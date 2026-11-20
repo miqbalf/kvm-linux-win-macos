@@ -3,7 +3,7 @@
 Goal: one keyboard and mouse (on a separate Mac) for both computers. Move the pointer off the edge of the
 Mac screen and it continues on the Linux laptop; the keyboard follows; text copy/paste works both ways.
 
-Status: set up 2026-11-20 (Deskflow 1.27 on both sides, TLS, laptop connected to the Mac).
+Status: working 2026-11-20 (Deskflow 1.27 on both sides, TLS; Mac keyboard and mouse control the laptop).
 
 ## Which tool
 | Option | Verdict |
@@ -64,4 +64,6 @@ mkdir -p ~/.config/autostart && cp /usr/share/applications/org.deskflow.deskflow
   Accept it in the Deskflow window on both computers.
 - Pointer does not move on the laptop although connected: GNOME's "Remote interaction" prompt was not
   allowed yet (Wayland input goes through the portal). Restart Deskflow on the laptop and click Allow.
+- Allowing Deskflow's input starts `xdg-desktop-portal-gnome`; before the session-wide Intel-only setting
+  (docs/04) that portal held the GTX and blocked Windows from starting.
 - Pointer does not leave the Mac: Deskflow needs Accessibility permission on the Mac.

@@ -121,7 +121,7 @@ to_win() {
     users=$(fuser /dev/nvidia* 2>/dev/null | xargs)
     if [ -n "$users" ]; then
       systemctl start nvidia-powerd 2>/dev/null
-      die "programs still use the GTX, close them first: $(ps -o args= -p ${users// /,} | cut -c1-60 | sort -u | paste -sd ';' | sed 's/;/; /g')"
+      die "programs still use the GTX (log out and in once if they are desktop services), close them first: $(ps -o args= -p ${users// /,} | cut -c1-60 | sort -u | paste -sd ';' | sed 's/;/; /g')"
     fi
     for m in $NV_MODS; do
       lsmod | grep -q "^$m " || continue

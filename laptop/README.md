@@ -61,6 +61,7 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | `host/win-gpu`, `host/looking-glass/` | Windows launcher, menu entry, Looking Glass client build + config |
 | `host/touchpad-bridge` | touchpad as a tap-to-click mouse for macOS |
 | `host/nitrosense/` | fan/RGB driver install (linuwu_sense, DKMS), `nitro` command, Nitro Control app |
+| `host/session/`, `host/gtx-run` | desktop draws on Intel only (GTX always free for Windows); `gtx-run <app>` for the GTX in Linux |
 | `host/wexec` | run PowerShell in a Windows VM from Linux (QEMU guest agent) |
 | `host/libvirt-hooks/qemu` | auto return to Linux when a passthrough VM stops |
 | `host/udev/`, `host/systemd/`, `host/tmpfiles/` | disk name, touchpad, GNOME keeps off the GTX, Looking Glass shared memory |

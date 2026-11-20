@@ -120,6 +120,8 @@ command -v looking-glass-client >/dev/null || bash laptop/host/looking-glass/bui
 UHOME=$(getent passwd "$USER_NAME" | cut -d: -f6)
 install -D -m 644 -o "$USER_NAME" -g "$USER_NAME" laptop/host/looking-glass/client.ini "$UHOME/.config/looking-glass/client.ini"
 install -m 755 laptop/host/win-gpu /usr/local/bin/win-gpu
+install -D -m 644 laptop/host/session/90-gtx-free.conf /etc/environment.d/90-gtx-free.conf
+install -m 755 laptop/host/gtx-run /usr/local/bin/gtx-run
 install -m 755 laptop/host/wexec /usr/local/bin/wexec
 install -D -m 644 laptop/host/looking-glass/win-gpu.desktop /usr/local/share/applications/win-gpu.desktop
 echo "launcher: 'Windows (GTX 1650)' in the app grid, or win-gpu / win-gpu stop"

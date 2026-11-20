@@ -11,8 +11,9 @@ win-gpu stop     # shuts Windows down; the GTX goes back to Linux
   Hold Right Ctrl + F: full screen. Right Ctrl + Q or closing the window: only closes the window;
   Windows keeps running, `win-gpu` reopens it.
 - Start > Shut down in Windows also returns the GTX to Linux (libvirt hook runs `gpu-mode win-off`).
-- Close programs that use the GTX in Linux first (`gpu-mode win` stops with their names). The GNOME
-  Settings app holds it: close Settings.
+- The desktop session draws on the Intel GPU only (`/etc/environment.d/90-gtx-free.conf`), so normally
+  nothing in Linux holds the GTX. If `gpu-mode win` still names a program, close it (or log out and in once
+  after installing). Run a Linux app on the GTX on purpose with `gtx-run <app>`; close it before Windows.
 - Same as `sudo gpu-mode win` / `sudo gpu-mode win-off`. Status: `sudo gpu-mode status`.
 - Run PowerShell in the guest from Linux: `wexec win10-gpu 'Get-Date'` (QEMU guest agent).
 - RDP also works: 192.168.122.13.
@@ -37,6 +38,7 @@ copies its frames into shared memory and the Linux client shows them.
 | VM | `vm/windows/win10-gpu.xml` | q35/OVMF, same disk and NVRAM as `win10`; GTX with its own VBIOS (`gtx1650.rom`) and Acer subsystem IDs; fake battery SSDT (NVIDIA mobile driver needs one); hidden KVM; 64 MB ivshmem; SPICE 127.0.0.1:5904 for input/audio, no emulated video |
 | Battery | `vm/windows/ssdt-battery.asl` | built with `iasl` by the setup script |
 | Client | `host/looking-glass/` | B7 client build (with a nettle 4 patch), `client.ini`, launcher `host/win-gpu` + menu entry |
+| Session GPU | `host/session/90-gtx-free.conf`, `host/gtx-run` | every desktop app uses Mesa EGL + Intel Vulkan only; `gtx-run` opts one app back into the GTX |
 | Shared memory | `host/tmpfiles/looking-glass.conf` | `/dev/shm/looking-glass` owned by the desktop user, group kvm |
 
 ## One-time guest setup (inside Windows)

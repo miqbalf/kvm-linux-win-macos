@@ -62,5 +62,7 @@ Read before changing boot, GPU or VM settings.
   instead: `mutter --headless --no-x11 --virtual-monitor 1280x1000 --wayland-display vs-shot`.
 - Every GTK4 app opens all GPUs for drawing (NVIDIA EGL and Vulkan), so VM Switch itself blocked
   `gpu-mode win` ("programs still use the GTX: python3"). VM Switch and Nitro Control now set
-  `__EGL_VENDOR_LIBRARY_FILENAMES` (Mesa) and `VK_DRIVER_FILES` (Intel) before loading GTK. Other open GTK4
-  apps (GNOME Settings, ...) still block the switch: `gpu-mode` now prints their full command lines.
+  `__EGL_VENDOR_LIBRARY_FILENAMES` (Mesa) and `VK_DRIVER_FILES` (Intel) before loading GTK. Then
+  `xdg-desktop-portal-gnome` (started when Deskflow asked for input permission) blocked it the same way.
+  Final fix for the whole session: `/etc/environment.d/90-gtx-free.conf` (Mesa EGL + Intel Vulkan only for every
+  user-session process) and `gtx-run` to opt one app back into the GTX.
