@@ -60,3 +60,7 @@ Read before changing boot, GPU or VM settings.
   remembered for a few minutes; no NOPASSWD sudo.
 - Screenshots of a GTK app while the screen is locked come out empty; render in a headless nested compositor
   instead: `mutter --headless --no-x11 --virtual-monitor 1280x1000 --wayland-display vs-shot`.
+- Every GTK4 app opens all GPUs for drawing (NVIDIA EGL and Vulkan), so VM Switch itself blocked
+  `gpu-mode win` ("programs still use the GTX: python3"). VM Switch and Nitro Control now set
+  `__EGL_VENDOR_LIBRARY_FILENAMES` (Mesa) and `VK_DRIVER_FILES` (Intel) before loading GTK. Other open GTK4
+  apps (GNOME Settings, ...) still block the switch: `gpu-mode` now prints their full command lines.

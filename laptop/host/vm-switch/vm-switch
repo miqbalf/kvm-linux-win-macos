@@ -4,6 +4,10 @@
 # Uses gpu-mode (through pkexec, policy local.kvm.gpu-mode) for GPU switches, virsh (group libvirt)
 # for the plain VMs, win-gpu for the Looking Glass window, nitro-control for fans and RGB.
 import fcntl, os, shutil, subprocess, sys, threading
+# Draw with the Intel iGPU only. GTK4 otherwise opens the GTX (NVIDIA EGL/Vulkan) and holds /dev/nvidia*,
+# which blocks `gpu-mode win` from moving the GTX to Windows ("programs still use the GTX: python3").
+os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = "/usr/share/glvnd/egl_vendor.d/50_mesa.json"
+os.environ["VK_DRIVER_FILES"] = "/usr/share/vulkan/icd.d/intel_icd.json"
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
@@ -293,11 +297,17 @@ class Win(Adw.ApplicationWindow):
                 self.toast("Cancelled")
             else:
                 err = [l for l in out if "ERROR" in l or "error" in l] or out
-                self.toast(f"{fail_msg}: {err[-1].replace('[gpu-mode] ', '')}" if err else fail_msg)
+                self.fail(fail_msg, err[-1].replace("[gpu-mode] ", "") if err else "")
             self.poll()
             return False
 
         threading.Thread(target=work, daemon=True).start()
+
+    def fail(self, heading, detail):
+        d = Adw.AlertDialog(heading=heading, body=(detail or "No details.").replace("ERROR: ", "") +
+                            "\n\nDetails: Recent activity at the bottom of this window.")
+        d.add_response("ok", "OK")
+        d.present(self)
 
     def launch(self, argv, missing):
         if not shutil.which(argv[0]):
@@ -325,7 +335,7 @@ class Win(Adw.ApplicationWindow):
                 self.toast("Cancelled")
             else:
                 err = [l for l in out if "ERROR" in l]
-                self.toast((err[-1] if err else out[-1] if out else "Windows did not start").replace("[gpu-mode] ", ""))
+                self.fail("Windows did not start", (err[-1] if err else out[-1] if out else "").replace("[gpu-mode] ", ""))
             self.poll()
             return False
 

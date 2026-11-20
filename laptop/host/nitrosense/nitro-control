@@ -5,6 +5,10 @@
 # Write access: group linuwu_sense (set up by laptop/host/nitrosense/install.sh, needs one re-login);
 # without it, each change asks for the password (pkexec).
 import glob, os, subprocess, sys
+# Draw with the Intel iGPU only. GTK4 otherwise opens the GTX (NVIDIA EGL/Vulkan) and holds /dev/nvidia*,
+# which blocks `gpu-mode win` from moving the GTX to Windows ("programs still use the GTX: python3").
+os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = "/usr/share/glvnd/egl_vendor.d/50_mesa.json"
+os.environ["VK_DRIVER_FILES"] = "/usr/share/vulkan/icd.d/intel_icd.json"
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
