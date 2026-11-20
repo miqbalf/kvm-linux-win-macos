@@ -59,6 +59,12 @@ desktop (VM Switch > Show desktop) or sign out there, then click again.
 The Deskflow client inside Windows runs in the desktop session: app windows get the Mac mouse through the
 laptop (they are normal Linux windows).
 
+Black areas in app windows (2026-11-20): first setup had the GTX rendering RDP sessions
+(`bEnumerateHWBeforeSW=1`, AVC444, NVENC) and Windows shadows/animations on. RemoteApp windows then showed
+black regions. Both switched off; takes effect at the next app session (sign out of the app session, or
+restart Windows). Cost: apps in app windows render without the GTX. Use the full desktop (Looking Glass) for
+GPU-heavy programs such as ArcGIS Pro, games, video.
+
 ## Setup
 ### Windows (done from Linux with `wexec win10-gpu '<PowerShell>'`, no clicks)
 Values from WinApps `oem/RDPApps.reg` plus the GPU policy:
@@ -69,9 +75,9 @@ HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp     Us
 HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList  fDisabledAllowList = 1
 HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services                 fAllowUnlistedRemotePrograms = 1
 HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layout                         IgnoreRemoteKeyboardLayout = 1
-HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services                 bEnumerateHWBeforeSW = 1        (use the GTX in RDP sessions)
-                                                                              AVC444ModePreferred = 1
-                                                                              AVCHardwareEncodePreferred = 1  (NVENC)
+HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services                 bEnumerateHWBeforeSW = 0   (no GTX in RDP sessions, see below)
+HKU\<user SID>\...\Explorer\VisualEffects                                      VisualFXSetting = 2   (no shadows/animations)
+HKU\<user SID>\Control Panel\Desktop                                            UserPreferencesMask = 90 12 03 80 10 00 00 00, FontSmoothing = 2
 Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'; gpupdate /target:computer /force
 ```
 Skipped from WinApps' `install.bat`: `Container.reg` (switches the clock to UTC; this VM uses local time).
