@@ -66,3 +66,12 @@ Read before changing boot, GPU or VM settings.
   `xdg-desktop-portal-gnome` (started when Deskflow asked for input permission) blocked it the same way.
   Final fix for the whole session: `/etc/environment.d/90-gtx-free.conf` (Mesa EGL + Intel Vulkan only for every
   user-session process) and `gtx-run` to opt one app back into the GTX.
+
+## VM disks on btrfs: cache='none' gives false checksum errors (2026-11-20)
+- Symptom: kernel log `BTRFS warning ... csum failed root 274 ino ... direct IO failed ... err no 10`, 350 times
+  on `win10.qcow2` (86 blocks), mostly during big installs in Windows.
+- Cause: `cache='none' io='native'` = O_DIRECT. On copy-on-write btrfs the guest can change a buffer while it is
+  written or read, so the checksum check fails for that I/O and the guest gets a read error.
+- Data was fine: a full buffered read of the 200 GB image afterwards found 0 unreadable blocks.
+- Fix: `cache='writeback' io='threads'` for all VMs (repo XMLs + `host/vm-disk-writeback.sh` for defined VMs).
+
