@@ -4,7 +4,16 @@ Device: small USB fingerprint dongle, `lsusb`: `3274:8012 MicroarrayTechnology M
 (sold as "TNP Nano USB Fingerprint Reader"). Plug it straight into the laptop, not through a hub
 (through a hub it failed with `device descriptor read/64, error -110`).
 
-Status 2026-11-20: driver built, install pending (needs sudo once), enroll not yet done.
+Status 2026-11-20: **this reader does not work, on Linux or Windows.** Replace it with a reader that libfprint
+lists as supported (https://fprint.freedesktop.org/supported-devices.html).
+
+Evidence:
+- stock `mafpmoc` and the community `microarray` driver both stop at the first reply: `transfer timed out`;
+- raw USB probe (pyusb): writes to EP 0x03 are accepted, but nothing ever comes back on EP 0x83 or 0x82, for the
+  handshake (0x23) and for VfyPwd 0x13, ReadSysPara 0x0F, 0x1D, also after a USB reset;
+- passed through to the Windows VM: Windows installs the maker's driver ("Microarray Fingerprint Reader",
+  18.5.54.172, `MafpWinbioSensor.DLL`), but the device fails with Code 10 ("cannot start") and
+  `WinBioEnumBiometricUnits` finds 0 fingerprint units.
 
 ## What happened
 | Where | Result |
