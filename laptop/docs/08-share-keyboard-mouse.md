@@ -32,7 +32,13 @@ sudo ufw allow from <LAN subnet, e.g. 192.168.1.0/24> to any port 24800 proto tc
 4. Start Deskflow at login: Deskflow settings, or GNOME Settings > Apps > Deskflow > Autostart.
 
 ### Mac
-1. Install: `brew install --cask deskflow`, or the download from deskflow.org.
+1. Install. Deskflow is not in the main Homebrew casks (`brew install --cask deskflow` fails with
+   "No Cask with this name exists"); it has its own tap:
+   ```
+   brew tap deskflow/tap
+   brew install --cask deskflow/tap/deskflow
+   ```
+   Or the `.dmg` from github.com/deskflow/deskflow/releases (`macos-arm64` for Apple silicon, `macos-x86_64` for Intel).
 2. Choose server mode. In the screen layout, drag a screen named `nitro` (same name as on the laptop)
    next to the Mac's screen, on the side where the laptop physically stands.
 3. Turn on TLS; accept the laptop's fingerprint on the first connection.
