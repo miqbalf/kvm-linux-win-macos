@@ -35,7 +35,7 @@ Linux home is `\\tsclient\home` in Windows; text clipboard works both ways; soun
 
 `winapps-sync` reads the Start menu through the QEMU guest agent (no RDP, no password), skips admin,
 accessibility and uninstall entries, takes 256 px icons from the program files, and writes
-`~/.local/share/applications/winapps-win-*.desktop` + `~/.local/share/winapps/apps/win-*/`.
+`~/.local/share/applications/winapps-win-*.desktop` (Exec `winapps-sync --open <id>`) + `~/.local/share/winapps/apps/win-*/`.
 A program removed in Windows loses its launcher on the next sync.
 
 ## Coherence vs. Looking Glass
@@ -51,6 +51,11 @@ desktop session is not signed out. Windows 10 allows one *active* session: openi
 use the Looking Glass desktop locks that desktop (its programs keep running); log in there again to go back.
 Tested: app windows open with no sign-out while a disconnected desktop session exists. Not yet tested: with
 the desktop logged in on the Looking Glass window at the same moment.
+Single-instance programs (Edge, Chrome, Office, ...) open as app windows only when they do **not** already run
+in the desktop session: a second copy hands off to the hidden one and exits, so no window appears (seen
+2026-11-20: Edge left open on the Looking Glass desktop, Edge app window never showed). The launchers run
+`winapps-sync --open <id>`, which checks first and shows a notification instead: close the program on the
+desktop (VM Switch > Show desktop) or sign out there, then click again.
 The Deskflow client inside Windows runs in the desktop session: app windows get the Mac mouse through the
 laptop (they are normal Linux windows).
 

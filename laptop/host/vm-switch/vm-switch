@@ -81,8 +81,9 @@ def winapps_entries():
         except OSError:
             continue
         ex = d.get("Exec", "").split()
-        if len(ex) >= 2 and ex[0].endswith("/winapps") and ex[1] != "windows":
-            out.append((d.get("Name", ex[1]), ex[1], d.get("Icon", "")))
+        if len(ex) >= 2 and ex[0].endswith(("/winapps", "/winapps-sync")) and ex[-2 if ex[-1] == "%F" else -1] != "windows":
+            aid = ex[2] if ex[0].endswith("winapps-sync") else ex[1]
+            out.append((d.get("Name", aid), aid, d.get("Icon", "")))
     names = [o[0] for o in out]
     nice = {"powershell-ide": "PowerShell ISE", "powershell": "PowerShell", "iexplorer": "Internet Explorer", "cmd": "Command Prompt"}
     return [(nice.get(a, n if names.count(n) == 1 else f"{n} ({a})"), a, i) for n, a, i in out]
