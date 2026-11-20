@@ -4,7 +4,8 @@
 desktop, each with its own icon in the app grid. It uses RDP RemoteApp (FreeRDP 3 on Linux), which needs
 Windows Pro or Enterprise (here: Windows 10 Enterprise LTSC).
 
-Status: Windows side done 2026-11-20; Linux side by `setup-winapps.sh` (needs the Windows password once).
+Status: working 2026-11-20. App-grid entries: Windows (full desktop), Explorer, cmd, PowerShell, PowerShell ISE,
+Paint, Internet Explorer. Tested: Paint opened as its own window on the GNOME desktop.
 
 ## Use
 1. Start Windows: VM Switch > **Start Windows** (WinApps never starts or stops the VM itself).
@@ -22,9 +23,13 @@ Linux home is `\\tsclient\home` in Windows; text clipboard works both ways; soun
 | Good for | games, video, anything fast | office, browser, tools |
 | Session | Windows console | RDP session of the same user |
 
-Only one of the two at a time: Windows 10 allows one session per user, so opening a WinApps window
-locks the console (Looking Glass then shows the lock screen). Close all WinApps windows (or sign out in
-`winapps windows`) and log in again in the Looking Glass window to go back.
+Only one of the two at a time, per Windows user:
+- WinApps needs the user **signed out** on the console (Looking Glass): with a desktop open there, the RemoteApp
+  login is refused (`LOGON_MSG_BUMP_OPTIONS` in the FreeRDP log). Locking is not enough: Start > user > Sign out.
+- Back to Looking Glass: close the WinApps windows, then log in in the Looking Glass window (the RDP session is
+  taken over).
+- The Deskflow client inside Windows runs in the console session: while you use WinApps, the Mac mouse reaches
+  the app windows through the laptop instead (they are normal Linux windows).
 
 ## Setup
 ### Windows (done from Linux with `wexec win10-gpu '<PowerShell>'`, no clicks)
@@ -48,8 +53,16 @@ bash laptop/host/winapps/setup-winapps.sh <windows-user>
 ```
 Installs `dialog` and `openbsd-netcat`, clones WinApps at the tested commit to `~/src/winapps`, writes
 `~/.config/winapps/winapps.conf` and the password file `~/.config/winapps/rdp-pass` (mode 600, read through
-`RDP_ASKPASS`, so it is not on the FreeRDP command line), then runs WinApps' own `setup.sh --user`
-(app scan, `.desktop` entries in `~/.local/share/applications`, `winapps` in `~/.local/bin`).
+`RDP_ASKPASS`, so it is not on the FreeRDP command line), then runs WinApps' `setup.sh --user --setupAllOfficiallySupportedApps` (no menus: app scan, `.desktop` entries
+in `~/.local/share/applications`, `winapps` in `~/.local/bin`). Add your own installed programs later with
+`bash ~/src/winapps/setup.sh --user --add-apps` (interactive).
+
+Problems met during setup (2026-11-20):
+| Symptom | Cause | Fix |
+|---|---|---|
+| `xf_setup_x11: failed to open display`, exit 14 | run over SSH, no `DISPLAY` | script borrows the desktop session's environment |
+| setup hangs at `Password:` | FreeRDP 3.33 ignores `RDP_ASKPASS` / `FREERDP_ASKPASS` | `RDP_PASS="$(cat ~/.config/winapps/rdp-pass)"` (password is on the FreeRDP command line, visible to local users only) |
+| `LOGON_MSG_BUMP_OPTIONS`, test times out | same user signed in on the console | sign out in Windows first |
 
 Config choices:
 - `WAFLAVOR="manual"` + `RDP_IP="192.168.122.13"`: WinApps only connects. With `libvirt` it would run
