@@ -160,7 +160,12 @@ def open_app(aid, files):
                 return
         except (SystemExit, OSError, subprocess.TimeoutExpired):
             pass                       # cannot check: just try
-    os.execv(WINAPPS, [WINAPPS, aid] + files)
+    # Own systemd scope: GNOME maps windows to launchers by the launcher's scope (app-gnome-<launcher>-*),
+    # so every window of this RDP connection (e.g. an installer started from Edge) would get this app's icon.
+    # Outside that scope, and without /wm-class (see setup-winapps.sh), FreeRDP names each window
+    # RAIL:<id> and GNOME shows each with the icon Windows sends for it.
+    os.execvp("systemd-run", ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+                              f"--unit=winapps-{aid}-{os.getpid()}", WINAPPS, aid] + files)
 
 
 def main():
@@ -198,7 +203,7 @@ def main():
         keep.add(f)
         write(f"{DESK}/{f}", "[Desktop Entry]\nType=Application\n"
               f"Name={name}\nComment={name} (Windows)\nExec={os.path.realpath(sys.argv[0])} --open {aid} %F\nIcon={icon}\n"
-              f"StartupWMClass={name}\nCategories=WinApps;\nTerminal=false\n")
+              f"Categories=WinApps;\nTerminal=false\n")
 
     # Launchers of programs no longer in Windows.
     gone = 0

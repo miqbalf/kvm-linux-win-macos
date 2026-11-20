@@ -56,6 +56,11 @@ in the desktop session: a second copy hands off to the hidden one and exits, so 
 2026-11-20: Edge left open on the Looking Glass desktop, Edge app window never showed). The launchers run
 `winapps-sync --open <id>`, which checks first and shows a notification instead: close the program on the
 desktop (VM Switch > Show desktop) or sign out there, then click again.
+Dock icons (2026-11-20): one RDP connection carries every window a program opens, so an ArcGIS installer
+started from Edge showed in the dock as Edge (same WM_CLASS from WinApps' `/wm-class`, same launcher scope).
+Now `setup-winapps.sh` removes `/wm-class` from WinApps and `winapps-sync --open` starts FreeRDP in its own
+systemd scope: each window is `RAIL:<id>` and GNOME shows it with the icon Windows sends for it, one dock
+entry per window. Cost: a pinned launcher does not light up as "running".
 The Deskflow client inside Windows runs in the desktop session: app windows get the Mac mouse through the
 laptop (they are normal Linux windows).
 

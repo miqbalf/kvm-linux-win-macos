@@ -62,6 +62,9 @@ nc -z -w 3 192.168.122.13 3389 || { echo "Windows RDP not reachable: start Windo
 echo "Sign out of Windows in the Looking Glass window first (Start > user > Sign out), then press Enter."
 read -r _
 cd "$SRC" && bash setup.sh --user --setupAllOfficiallySupportedApps   # no menus
+# One dock icon per Windows window, with that window's own icon: drop WinApps' fixed /wm-class
+# (with it, every window of a connection, e.g. an installer opened from Edge, shows as Edge).
+sed -i '/\/wm-class:"\$FULL_NAME" \\$/d' "$HOME/.local/bin/winapps-src/bin/winapps"
 # Every Start-menu program into the app grid folder "Windows" (VM Switch re-runs this at each Windows start).
 install -Dm755 "$HERE/winapps-sync" "$HOME/.local/bin/winapps-sync"
 "$HOME/.local/bin/winapps-sync"
