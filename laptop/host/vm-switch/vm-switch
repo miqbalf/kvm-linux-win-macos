@@ -1,0 +1,409 @@
+#!/usr/bin/env python3
+# VM Switch - one window to see and switch what runs on the laptop: Linux, Windows on the GTX 1650
+# (Looking Glass window), macOS on the laptop screen (iGPU), plus the VNC-only VMs.
+# Uses gpu-mode (through pkexec, policy local.kvm.gpu-mode) for GPU switches, virsh (group libvirt)
+# for the plain VMs, win-gpu for the Looking Glass window, nitro-control for fans and RGB.
+import fcntl, os, shutil, subprocess, sys, threading
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+
+VIRSH = ["virsh", "-c", "qemu:///system"]
+GPU_MODE = "/usr/local/sbin/gpu-mode"
+IGPU, GTX = "0000:00:02.0", "0000:01:00.0"
+VNC = {"macos": 5902, "win10": 5903}
+
+CSS = b"""
+.hero { padding: 18px 20px; border-radius: 14px; }
+.hero-title { font-size: 1.35em; font-weight: 800; }
+.os-card { padding: 18px; border-radius: 14px; }
+.os-title { font-size: 1.15em; font-weight: 700; }
+.pill { padding: 2px 10px; border-radius: 99px; font-size: 0.85em; font-weight: 700; }
+.pill.on { background: alpha(@success_color, 0.18); color: @success_color; }
+.pill.off { background: alpha(@window_fg_color, 0.08); color: alpha(@window_fg_color, 0.65); }
+.pill.busy { background: alpha(@warning_color, 0.2); color: @warning_color; }
+.log { font-family: monospace; font-size: 0.85em; }
+"""
+
+
+def drv(dev):
+    try:
+        return os.path.basename(os.readlink(f"/sys/bus/pci/devices/{dev}/driver"))
+    except OSError:
+        return "none"
+
+
+def switching():
+    """True while gpu-mode holds its lock (a switch is in progress)."""
+    try:
+        with open("/run/gpu-mode.lock") as f:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            return False
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+
+
+def read_state():
+    s = {"running": set(), "igpu": drv(IGPU), "gtx": drv(GTX), "busy": switching(), "lg": False, "log": ""}
+    try:
+        out = subprocess.run(VIRSH + ["list", "--name"], capture_output=True, text=True, timeout=5).stdout
+        s["running"] = {l.strip() for l in out.splitlines() if l.strip()}
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    s["lg"] = subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "looking-glass-client"],
+                             capture_output=True).returncode == 0
+    try:
+        s["log"] = subprocess.run(["journalctl", "-t", "gpu-mode", "-n", "14", "-o", "short", "--no-pager", "-q"],
+                                  capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return s
+
+
+class OsCard(Gtk.Box):
+    """Big card: icon, name, state pill, one-line explanation, buttons."""
+
+    def __init__(self, icon, title):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10, hexpand=True)
+        self.add_css_class("card")
+        self.add_css_class("os-card")
+        top = Gtk.Box(spacing=12)
+        img = Gtk.Image.new_from_icon_name(icon)
+        img.set_pixel_size(40)
+        top.append(img)
+        self.title = Gtk.Label(label=title, xalign=0, hexpand=True)
+        self.title.add_css_class("os-title")
+        top.append(self.title)
+        self.pill = Gtk.Label()
+        self.pill.add_css_class("pill")
+        self.pill.set_valign(Gtk.Align.CENTER)
+        top.append(self.pill)
+        self.append(top)
+        self.info = Gtk.Label(xalign=0, wrap=True)
+        self.info.add_css_class("dim-label")
+        self.append(self.info)
+        self.buttons = Gtk.Box(spacing=8, margin_top=4)
+        self.append(self.buttons)
+
+    def set_state(self, text, kind, info):
+        self.pill.set_label(text)
+        for k in ("on", "off", "busy"):
+            self.pill.remove_css_class(k)
+        self.pill.add_css_class(kind)
+        self.info.set_label(info)
+
+    def set_buttons(self, specs):
+        """specs: list of (label, style or None, callback or None = disabled)."""
+        while (c := self.buttons.get_first_child()):
+            self.buttons.remove(c)
+        for label, style, cb in specs:
+            b = Gtk.Button(label=label)
+            b.add_css_class("pill")
+            if style:
+                b.add_css_class(style)
+            if cb:
+                b.connect("clicked", lambda _b, f=cb: f())
+            else:
+                b.set_sensitive(False)
+            self.buttons.append(b)
+
+
+class Win(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="VM Switch", default_width=620, default_height=820)
+        self.state = None
+        self.pending = {}      # vm -> text while an action we started is running
+        self.toasts = Adw.ToastOverlay()
+        tv = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        fans = Gtk.Button(icon_name="weather-windy-symbolic", tooltip_text="Fans and keyboard light")
+        fans.connect("clicked", lambda *a: self.launch(["nitro-control"], "Nitro Control is not installed"))
+        header.pack_end(fans)
+        tv.add_top_bar(header)
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        clamp = Adw.Clamp(maximum_size=640, tightening_threshold=480)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
+                      margin_top=18, margin_bottom=24, margin_start=16, margin_end=16)
+        clamp.set_child(box)
+        scroll.set_child(clamp)
+        tv.set_content(scroll)
+        self.toasts.set_child(tv)
+        self.set_content(self.toasts)
+
+        # Now: what owns the screen and the GPUs
+        hero = Gtk.Box(spacing=14)
+        hero.add_css_class("card")
+        hero.add_css_class("hero")
+        self.hero_icon = Gtk.Image(pixel_size=48)
+        hero.append(self.hero_icon)
+        hb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
+        self.hero_title = Gtk.Label(xalign=0, wrap=True)
+        self.hero_title.add_css_class("hero-title")
+        self.hero_sub = Gtk.Label(xalign=0, wrap=True)
+        self.hero_sub.add_css_class("dim-label")
+        hb.append(self.hero_title)
+        hb.append(self.hero_sub)
+        hero.append(hb)
+        box.append(hero)
+
+        lbl = Gtk.Label(label="Switch", xalign=0)
+        lbl.add_css_class("heading")
+        box.append(lbl)
+        self.win = OsCard("input-gaming-symbolic", "Windows")
+        self.mac = OsCard("video-display-symbolic", "macOS")
+        box.append(self.win)
+        box.append(self.mac)
+
+        more = Adw.PreferencesGroup(title="More")
+        box.append(more)
+        self.rows = {}
+        for vm, title, sub in (("macos", "macOS in a window", "Virtual screen over VNC, no graphics acceleration"),
+                               ("win10", "Windows install / rescue", "Same disk as Windows, no GTX, VNC screen")):
+            row = Adw.ActionRow(title=title, subtitle=sub)
+            pill = Gtk.Label(valign=Gtk.Align.CENTER)
+            pill.add_css_class("pill")
+            view = Gtk.Button(icon_name="view-reveal-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Open viewer")
+            view.add_css_class("flat")
+            view.connect("clicked", lambda _b, v=vm: self.open_vnc(v))
+            act = Gtk.Button(valign=Gtk.Align.CENTER)
+            act.connect("clicked", lambda _b, v=vm: self.toggle_plain(v))
+            row.add_suffix(pill)
+            row.add_suffix(view)
+            row.add_suffix(act)
+            more.add(row)
+            self.rows[vm] = (row, pill, view, act)
+        fr = Adw.ActionRow(title="Fans and keyboard light", subtitle="Fan speed, RGB zones, battery limit",
+                           activatable=True)
+        fr.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        fr.connect("activated", lambda *a: self.launch(["nitro-control"], "Nitro Control is not installed"))
+        more.add(fr)
+
+        exp = Gtk.Expander(label="Recent activity")
+        self.log = Gtk.Label(xalign=0, yalign=0, selectable=True, wrap=True, wrap_mode=2)
+        self.log.add_css_class("log")
+        exp.set_child(self.log)
+        box.append(exp)
+
+        self.poll()
+        GLib.timeout_add_seconds(2, self.poll)
+
+    # ---------- state ----------
+    def poll(self):
+        def work():
+            s = read_state()
+            GLib.idle_add(self.render, s)
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def render(self, s):
+        self.state = s
+        run = s["running"]
+        win_on, mac_on = "win10-gpu" in run, "macos-igpu" in run
+        busy = s["busy"]
+
+        # hero
+        if mac_on:
+            icon, title, sub = "video-display-symbolic", "macOS has the laptop screen", "Apple menu > Shut Down to come back."
+        elif win_on:
+            icon, title = "input-gaming-symbolic", "Linux, with Windows running"
+            sub = "Windows uses the GTX 1650. Right Ctrl grabs or releases the keyboard and mouse."
+        else:
+            icon, title, sub = "computer-symbolic", "Linux", "No virtual machine is running. GTX 1650 and laptop screen belong to Linux."
+        if busy:
+            title, sub = "Switching…", "A GPU is moving between Linux and a VM. This takes up to a minute."
+        self.hero_icon.set_from_icon_name(icon)
+        self.hero_title.set_label(title)
+        self.hero_sub.set_label(sub)
+
+        # Windows card
+        wp = self.pending.get("win10-gpu")
+        if busy or wp:
+            self.win.set_state(wp or "Switching", "busy", "Please wait…")
+            self.win.set_buttons([("Working…", None, None)])
+        elif win_on:
+            self.win.set_state("Running", "on", "On the GTX 1650, in a window on this desktop." +
+                               ("" if s["lg"] else " The window is closed."))
+            self.win.set_buttons([("Show window" if not s["lg"] else "Window is open", "suggested-action",
+                                   None if s["lg"] else self.win_show),
+                                  ("Shut down", None, self.win_stop)])
+        else:
+            blocked = "win10" in run
+            self.win.set_state("Off", "off", "Runs in a window here, with the GTX 1650 for games and apps. "
+                               "About 30 s to start." if not blocked else "Shut down “Windows install / rescue” first (same disk).")
+            self.win.set_buttons([("Start Windows", "suggested-action", None if blocked else self.win_start)])
+
+        # macOS card
+        mp = self.pending.get("macos-igpu")
+        if busy or mp:
+            self.mac.set_state(mp or "Switching", "busy", "Please wait…")
+            self.mac.set_buttons([("Working…", None, None)])
+        elif mac_on:
+            self.mac.set_state("Running", "on", "On the laptop screen.")
+            self.mac.set_buttons([("Force back to Linux", "destructive-action", self.mac_stop)])
+        else:
+            why = ("Shut down Windows first." if win_on else
+                   "Shut down “macOS in a window” first (same disk)." if "macos" in run else "")
+            self.mac.set_state("Off", "off", why or "Full screen on the laptop panel, with graphics acceleration. "
+                               "The Linux desktop closes while macOS runs.")
+            self.mac.set_buttons([("Start on laptop screen", "suggested-action", None if why else self.mac_start)])
+
+        # plain VMs
+        for vm, (row, pill, view, act) in self.rows.items():
+            on = vm in run
+            p = self.pending.get(vm)
+            pill.set_label(p or ("Running" if on else "Off"))
+            for k in ("on", "off", "busy"):
+                pill.remove_css_class(k)
+            pill.add_css_class("busy" if p else "on" if on else "off")
+            view.set_visible(on)
+            act.set_label("Stop" if on else "Start")
+            conflict = {"macos": "macos-igpu", "win10": "win10-gpu"}[vm] in run
+            act.set_sensitive(not p and not busy and (on or not conflict))
+            row.set_subtitle(row.get_subtitle().split(" — ")[0] + (" — VNC 127.0.0.1:%d" % VNC[vm] if on else ""))
+
+        self.log.set_label(s["log"] or "No switches yet.")
+        return False
+
+    # ---------- actions ----------
+    def toast(self, text):
+        self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
+
+    def run(self, argv, vm, label, done_msg, fail_msg):
+        """Run argv in the background, show `label` on vm's card meanwhile."""
+        self.pending[vm] = label
+        if self.state:
+            self.render(self.state)
+
+        def work():
+            try:
+                r = subprocess.run(argv, capture_output=True, text=True)
+                rc, out = r.returncode, (r.stdout + r.stderr).strip().splitlines()
+            except OSError as e:
+                rc, out = 1, [str(e)]
+            GLib.idle_add(finish, rc, out)
+
+        def finish(rc, out):
+            self.pending.pop(vm, None)
+            if rc == 0:
+                self.toast(done_msg)
+            elif argv[0] == "pkexec" and rc in (126, 127):
+                self.toast("Cancelled")
+            else:
+                err = [l for l in out if "ERROR" in l or "error" in l] or out
+                self.toast(f"{fail_msg}: {err[-1].replace('[gpu-mode] ', '')}" if err else fail_msg)
+            self.poll()
+            return False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def launch(self, argv, missing):
+        if not shutil.which(argv[0]):
+            self.toast(missing)
+            return
+        subprocess.Popen(argv, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def win_start(self):
+        # gpu-mode win moves the GTX and starts the VM; then open the window.
+        def done():
+            self.launch(["win-gpu"], "win-gpu is not installed")
+        self.pending["win10-gpu"] = "Starting"
+        self.render(self.state)
+
+        def work():
+            r = subprocess.run(["pkexec", GPU_MODE, "win"], capture_output=True, text=True)
+            GLib.idle_add(after, r.returncode, (r.stdout + r.stderr).strip().splitlines())
+
+        def after(rc, out):
+            self.pending.pop("win10-gpu", None)
+            if rc == 0:
+                self.toast("Windows is starting, the window opens now")
+                done()
+            elif rc in (126, 127):
+                self.toast("Cancelled")
+            else:
+                err = [l for l in out if "ERROR" in l]
+                self.toast((err[-1] if err else out[-1] if out else "Windows did not start").replace("[gpu-mode] ", ""))
+            self.poll()
+            return False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def win_show(self):
+        self.launch(["win-gpu"], "win-gpu is not installed")
+        self.toast("Opening the Windows window. Right Ctrl grabs / releases keyboard and mouse.")
+
+    def win_stop(self):
+        self.ask("Shut down Windows?", "Save your work in Windows first. The GTX 1650 goes back to Linux.",
+                 "Shut down", Adw.ResponseAppearance.DESTRUCTIVE,
+                 lambda: (subprocess.run(["pkill", "-u", str(os.getuid()), "-f", "looking-glass-client"]),
+                          self.run(["pkexec", GPU_MODE, "win-off"], "win10-gpu", "Shutting down",
+                                   "Windows is off, the GTX is back on Linux", "Shut down failed")))
+
+    def mac_start(self):
+        self.ask("Switch the laptop screen to macOS?",
+                 "The Linux desktop closes and all open Linux apps end: save your work first.\n\n"
+                 "macOS appears after about 1–1.5 minutes. To come back: Apple menu > Shut Down "
+                 "(Linux returns by itself). If nothing responds, hold the power button.",
+                 "Switch to macOS", Adw.ResponseAppearance.SUGGESTED,
+                 lambda: self.run(["pkexec", GPU_MODE, "mac-bg"], "macos-igpu", "Switching",
+                                  "Switching to macOS…", "Switch failed"))
+
+    def mac_stop(self):
+        self.ask("Force back to Linux?", "macOS is powered off after 30 s. Unsaved macOS work is lost.",
+                 "Force back", Adw.ResponseAppearance.DESTRUCTIVE,
+                 lambda: self.run(["pkexec", GPU_MODE, "host"], "macos-igpu", "Stopping",
+                                  "Back on Linux", "Failed"))
+
+    def toggle_plain(self, vm):
+        if vm in (self.state or {}).get("running", set()):
+            self.run(VIRSH + ["shutdown", vm], vm, "Stopping", f"Shutdown sent to {vm}", "Stop failed")
+        else:
+            self.run(VIRSH + ["start", vm], vm, "Starting", f"{vm} started, open the viewer", "Start failed")
+
+    def open_vnc(self, vm):
+        # VNC listens on 127.0.0.1 only. The password is in the domain XML (readable by group libvirt).
+        try:
+            xml = subprocess.run(VIRSH + ["dumpxml", "--security-info", vm], capture_output=True, text=True).stdout
+            pw = xml.split("passwd='", 1)[1].split("'", 1)[0]
+            Gdk.Display.get_default().get_clipboard().set(pw)
+            hint = "VNC password copied: paste it when asked"
+        except (IndexError, OSError):
+            hint = "Open the VNC viewer"
+        viewer = next((v for v in ("gnome-connections", "remmina", "vncviewer") if shutil.which(v)), None)
+        if not viewer:
+            self.toast(f"No VNC viewer installed (sudo pacman -S gnome-connections). Address 127.0.0.1:{VNC[vm]}")
+            return
+        arg = f"127.0.0.1::{VNC[vm]}" if viewer == "vncviewer" else f"vnc://127.0.0.1:{VNC[vm]}"
+        self.launch([viewer, arg], "")
+        self.toast(hint)
+
+    def ask(self, heading, body, ok_label, appearance, on_ok):
+        d = Adw.AlertDialog(heading=heading, body=body)
+        d.add_response("cancel", "Cancel")
+        d.add_response("ok", ok_label)
+        d.set_response_appearance("ok", appearance)
+        d.set_default_response("cancel")
+        d.connect("response", lambda _d, r: r == "ok" and on_ok())
+        d.present(self)
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="local.kvm.VmSwitch")
+
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        css = Gtk.CssProvider()
+        css.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def do_activate(self):
+        (self.props.active_window or Win(self)).present()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

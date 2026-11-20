@@ -1,7 +1,7 @@
 # Windows on the GTX 1650
 
 ## Daily use
-App grid > **Windows (GTX 1650)**, or in a terminal:
+App grid > **VM Switch** > **Start Windows** (or the **Windows (GTX 1650)** launcher), or in a terminal:
 ```
 win-gpu          # moves the GTX to the VM, starts win10-gpu, opens the Looking Glass window
 win-gpu stop     # shuts Windows down; the GTX goes back to Linux

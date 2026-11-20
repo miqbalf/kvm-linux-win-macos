@@ -12,6 +12,14 @@ This folder is separate from the desktop server setup in the repo root (`host/`,
 is shared with it.
 
 ## Quick use
+Easiest: app grid > **VM Switch**. It shows what is running and has a button for each switch
+(Start Windows, Shut down, Start macOS on the laptop screen, the VNC VMs, fans and lights).
+The first switch asks for your password; it is remembered for a few minutes.
+
+![VM Switch](docs/img/vm-switch.png)
+
+The same from a terminal:
+
 | From | To | Do this | Time |
 |---|---|---|---|
 | Linux | Windows | App grid > **Windows (GTX 1650)**, or `win-gpu` | about 30 s |
@@ -42,6 +50,7 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 |---|---|
 | `host/00-inspect.sh`, `01-host-setup.sh`, `02-verify.sh` | read-only report, setup, health check |
 | `host/gpu-mode` | the switch: `mac`, `host`, `win`, `win-off`, `status` |
+| `host/vm-switch/` | VM Switch app (GTK4), polkit rule for `gpu-mode`, installer |
 | `host/win-gpu`, `host/looking-glass/` | Windows launcher, menu entry, Looking Glass client build + config |
 | `host/touchpad-bridge` | touchpad as a tap-to-click mouse for macOS |
 | `host/nitrosense/` | fan/RGB driver install (linuwu_sense, DKMS), `nitro` command, Nitro Control app |

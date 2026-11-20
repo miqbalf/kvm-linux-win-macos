@@ -123,6 +123,7 @@ install -m 755 laptop/host/win-gpu /usr/local/bin/win-gpu
 install -m 755 laptop/host/wexec /usr/local/bin/wexec
 install -D -m 644 laptop/host/looking-glass/win-gpu.desktop /usr/local/share/applications/win-gpu.desktop
 echo "launcher: 'Windows (GTX 1650)' in the app grid, or win-gpu / win-gpu stop"
+bash laptop/host/vm-switch/install.sh
 echo "GNOME ignores the GTX after the next login (log out once)"
 
 install -m 755 laptop/host/gpu-mode /usr/local/sbin/gpu-mode

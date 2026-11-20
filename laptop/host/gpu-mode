@@ -70,6 +70,9 @@ vtcon() { for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" "$v/na
 [ "$(id -u)" = 0 ] || die "run with sudo"
 # One switch at a time (the libvirt hook also runs `gpu-mode host` when macos-igpu stops).
 [ "${1:-}" = watchdog ] && { watchdog; exit 0; }
+# mac-bg: same as `mac`, but as its own system unit, so the switch survives the end of the desktop
+# session that started it (the VM Switch app runs inside GNOME, which `mac` stops).
+[ "${1:-}" = mac-bg ] && exec systemd-run -q --collect --unit=gpu-mode-switch /usr/local/sbin/gpu-mode mac
 exec 9>/run/gpu-mode.lock
 flock -w 300 9 || die "another gpu-mode is still running"
 
@@ -228,5 +231,5 @@ case "${1:-status}" in
   win) to_win; status ;;
   win-off) to_win_off; status ;;
   status) status ;;
-  *) echo "usage: gpu-mode mac|host|win|win-off|status"; exit 2 ;;
+  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status"; exit 2 ;;
 esac

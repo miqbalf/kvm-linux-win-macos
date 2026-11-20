@@ -4,7 +4,7 @@
 The panel is wired only to the Intel iGPU, so **either Linux or macOS owns the screen, never both**.
 Nothing is permanent: a laptop reboot always comes back to Linux.
 
-**Go to macOS** (from a Linux terminal on the laptop, or over SSH):
+**Go to macOS**: VM Switch app > macOS > **Start on laptop screen**, or from a terminal (also over SSH):
 ```
 sudo gpu-mode mac
 ```

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=VM Switch
+Comment=Switch between Linux, Windows (GTX 1650) and macOS (laptop screen)
+Exec=/usr/local/bin/vm-switch
+Icon=computer
+Categories=System;Emulator;
+Keywords=kvm;windows;macos;vm;gpu;
+StartupWMClass=local.kvm.VmSwitch

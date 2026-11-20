@@ -26,6 +26,7 @@ What the setup script installs:
 |---|---|
 | `/usr/local/sbin/gpu-mode` | `host/gpu-mode` |
 | `/usr/local/sbin/touchpad-bridge` | `host/touchpad-bridge` |
+| `/usr/local/bin/vm-switch` + menu entry, polkit action `local.kvm.gpu-mode` | `host/vm-switch/` |
 | `/usr/local/bin/win-gpu`, `/usr/local/bin/wexec` | `host/win-gpu`, `host/wexec` |
 | `/usr/local/share/applications/win-gpu.desktop` | `host/looking-glass/win-gpu.desktop` |
 | `~/.config/looking-glass/client.ini` | `host/looking-glass/client.ini` |

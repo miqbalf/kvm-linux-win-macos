@@ -52,3 +52,11 @@ Read before changing boot, GPU or VM settings.
   original values at login instead (`nitro restore`).
 - Its tmpfiles permissions run before the module loads at boot: re-run them from `linuwu_sense.service`.
 - `systemctl restart linuwu_sense.service` unloads the module (ExecStop=rmmod).
+
+## 2026-11-20: VM Switch app
+- `gpu-mode mac` stops GDM, which ends every process of the desktop session, including an app that started
+  the switch. The app uses `gpu-mode mac-bg`, which re-runs the switch as its own system unit (`systemd-run`).
+- pkexec + a polkit action with `auth_admin_keep` for `/usr/local/sbin/gpu-mode`: one password prompt, then
+  remembered for a few minutes; no NOPASSWD sudo.
+- Screenshots of a GTK app while the screen is locked come out empty; render in a headless nested compositor
+  instead: `mutter --headless --no-x11 --virtual-monitor 1280x1000 --wayland-display vs-shot`.

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- pkexec /usr/local/sbin/gpu-mode (VM Switch app, win-gpu): asks for the password once, then
+     remembers it for a few minutes (auth_admin_keep). Only for the local, active desktop session. -->
+<policyconfig>
+  <action id="local.kvm.gpu-mode">
+    <description>Switch a GPU between Linux and a VM</description>
+    <message>Moving a GPU between Linux and a virtual machine needs your password</message>
+    <icon_name>computer</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/sbin/gpu-mode</annotate>
+  </action>
+</policyconfig>
