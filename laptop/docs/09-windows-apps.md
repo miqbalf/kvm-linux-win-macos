@@ -65,6 +65,10 @@ RemoteApp part of RDP) and the dock showed "Rail". Now:
   from its title: title contains a launcher name (e.g. "Microsoft Edge") -> that launcher (its icon, running dot);
   otherwise the title itself, with the icon Windows sends. 1x1 px untitled helper windows of the Windows shell
   are hidden from the dock (`_NET_WM_STATE_SKIP_TASKBAR`).
+- Pinning: a window that matches a launcher (by its name, StartupWMClass or program name, e.g. "File Explorer"
+  -> Explorer) belongs to that launcher and can be pinned (right-click > Pin to Dash). Windows that match no
+  launcher (e.g. an installer) are GNOME "window-backed" apps and cannot be pinned; pin the program from the
+  app grid folder Windows instead.
 The Deskflow client inside Windows runs in the desktop session: app windows get the Mac mouse through the
 laptop (they are normal Linux windows).
 
