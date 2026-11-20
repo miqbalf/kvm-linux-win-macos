@@ -3,7 +3,7 @@
 Goal: one keyboard and mouse (on a separate Mac) for both computers. Move the pointer off the edge of the
 Mac screen and it continues on the Linux laptop; the keyboard follows; text copy/paste works both ways.
 
-Status: working 2026-11-20 (Deskflow 1.27 on both sides, TLS; Mac keyboard and mouse control the laptop).
+Status: working 2026-11-20 (Deskflow 1.27, TLS). Layout: Mac | laptop (`nitro`) | Windows VM (`windows`).
 
 ## Which tool
 | Option | Verdict |
@@ -50,10 +50,45 @@ mkdir -p ~/.config/autostart && cp /usr/share/applications/org.deskflow.deskflow
    (`~/Library/Deskflow/tls/trusted-clients`). Layout file: `~/Library/Deskflow/deskflow-server.conf`.
 4. System Settings > Privacy & Security > **Accessibility**: allow Deskflow (needed to read the keyboard and mouse).
 
+## Windows VM as a third screen
+The Mac mouse does **not** work inside the Looking Glass window through the laptop client:
+- Looking Glass only sends mouse input to Windows while it captures the pointer (Right Ctrl), and the Mac
+  keyboard has no Right Ctrl.
+- In capture mode Looking Glass reads relative mouse motion (pointer lock); Deskflow on GNOME Wayland moves the
+  pointer with absolute positions through libei, so the captured cursor does not move.
+
+Fix: Windows runs its own Deskflow client and is a screen of its own, right of the laptop:
+`Mac | nitro (laptop) | windows`. Push the pointer off the laptop's right edge and it goes into Windows (shown in
+the Looking Glass window), with the Mac keyboard. No capture key needed. Leave Looking Glass uncaptured.
+
+Setup in the Windows guest (done 2026-11-20, from Linux with `wexec`, no clicks in Windows):
+1. Microsoft Visual C++ 2015-2022 x64 runtime (the Deskflow MSI stops with error 1603 / `ShowVCRedistError`
+   without it): `vc_redist.x64.exe /install /quiet /norestart` from `https://aka.ms/vs/17/release/vc_redist.x64.exe`
+   (check its Authenticode signature is Microsoft).
+2. `deskflow-1.27.0-win-x64.msi` from the GitHub release (it is not Authenticode-signed: compare its SHA-256 with
+   the `digest` shown for the asset on the release page), `msiexec /i deskflow.msi /qn`. Installs the
+   `Deskflow` service (deskflow-daemon), which runs the client elevated in the user's session.
+3. `%APPDATA%\Deskflow\Deskflow.conf` of the Windows user:
+   ```
+   [client]
+   remoteHost=<Mac LAN IP>
+   [core]
+   computerName=windows
+   coreMode=1
+   [gui]
+   enableUpdateCheck=false
+   startCoreWithGui=true
+   ```
+4. Shortcut to `C:\Program Files\Deskflow\deskflow.exe` in the user's Startup folder (starts at login).
+5. On the Mac: add a screen `windows` right of `nitro` in the Deskflow layout; accept the new fingerprint on both
+   sides once (Windows log: `failed to verify server certificate fingerprint` until accepted).
+
+The Windows VM reaches the Mac through the VM network (NAT), so the Mac sees it coming from the laptop's IP.
+
 ## Limits on this laptop
 - Works while the Linux desktop is shown. In macOS panel mode (`gpu-mode mac`) GNOME is stopped, so the
   Linux client is gone; run Deskflow as a client inside that macOS instead (same server, another screen name).
-- Windows in the Looking Glass window: input reaches Windows only after Right Ctrl captures it.
+- The `windows` screen only exists while Windows runs; when it is off, the pointer stops at the laptop's right edge.
 - Screen lock / login screen on Linux: the client runs in the user session, so it does not work at the GDM
   login screen.
 

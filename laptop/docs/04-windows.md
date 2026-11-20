@@ -17,6 +17,7 @@ win-gpu stop     # shuts Windows down; the GTX goes back to Linux
 - Same as `sudo gpu-mode win` / `sudo gpu-mode win-off`. Status: `sudo gpu-mode status`.
 - Run PowerShell in the guest from Linux: `wexec win10-gpu 'Get-Date'` (QEMU guest agent).
 - RDP also works: 192.168.122.13.
+- Mac keyboard and mouse in Windows: Deskflow client inside Windows (docs/08), not through the Looking Glass window.
 
 ### Install / rescue (`win10`, no GTX)
 ```

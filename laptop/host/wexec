@@ -2,7 +2,7 @@
 # wexec <vm> <powershell command>: run PowerShell in a Windows guest via the QEMU guest agent, print output.
 import sys, json, subprocess, time, base64
 vm, cmd = sys.argv[1], " ".join(sys.argv[2:])
-def qga(o): return json.loads(subprocess.check_output(["sudo","virsh","qemu-agent-command",vm,json.dumps(o),"--timeout","30"]))["return"]
+def qga(o): return json.loads(subprocess.check_output(["virsh","-c","qemu:///system","qemu-agent-command",vm,json.dumps(o),"--timeout","30"]))["return"]
 pid = qga({"execute":"guest-exec","arguments":{"path":"powershell.exe","arg":["-NoProfile","-NonInteractive","-Command",cmd],"capture-output":True}})["pid"]
 for _ in range(1200):
     st = qga({"execute":"guest-exec-status","arguments":{"pid":pid}})
