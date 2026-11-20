@@ -4,7 +4,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."   # repo root
 [ "$(id -u)" = 0 ] || { echo "run with sudo"; exit 1; }
-pacman -S --needed --noconfirm python-gobject gtk4 libadwaita gnome-connections >/dev/null
+pacman -S --needed --noconfirm python-gobject gtk4 libadwaita >/dev/null
+# VNC viewer for the "macOS in a window" / "Windows install" VMs. Optional: a bad mirror must not stop the install.
+pacman -S --needed --noconfirm gnome-connections >/dev/null 2>&1 \
+  || echo "WARN: gnome-connections not installed (mirror error?). Later: sudo pacman -Syu gnome-connections"
 install -m 755 laptop/host/gpu-mode /usr/local/sbin/gpu-mode          # has the mac-bg mode the app uses
 install -m 755 laptop/host/win-gpu /usr/local/bin/win-gpu
 install -m 755 laptop/host/vm-switch/vm-switch /usr/local/bin/vm-switch
