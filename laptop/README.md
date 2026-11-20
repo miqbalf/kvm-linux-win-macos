@@ -50,6 +50,7 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | [docs/05-lessons-learned.md](docs/05-lessons-learned.md) | What broke and why (read before changing anything) |
 | [docs/06-open-items.md](docs/06-open-items.md) | Not done yet, ideas |
 | [docs/07-fan-and-rgb.md](docs/07-fan-and-rgb.md) | NitroSense on Linux: fans, 4-zone keyboard RGB, battery limit |
+| [docs/08-share-keyboard-mouse.md](docs/08-share-keyboard-mouse.md) | Use a Mac's keyboard and mouse on the laptop (Deskflow) |
 
 ## Files
 | Path | What |
