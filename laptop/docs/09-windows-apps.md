@@ -61,9 +61,11 @@ laptop (they are normal Linux windows).
 
 Black areas in app windows (2026-11-20): first setup had the GTX rendering RDP sessions
 (`bEnumerateHWBeforeSW=1`, AVC444, NVENC) and Windows shadows/animations on. RemoteApp windows then showed
-black regions. Both switched off; takes effect at the next app session (sign out of the app session, or
-restart Windows). Cost: apps in app windows render without the GTX. Use the full desktop (Looking Glass) for
-GPU-heavy programs such as ArcGIS Pro, games, video.
+black regions. Both were switched off at once. Then the GTX was switched back on (shadows/animations
+and AVC444/NVENC stay off), to find which one caused it: under test. Settings apply to the next app session
+(sign out of the app session, or restart Windows). If black areas come back, set `bEnumerateHWBeforeSW=0` and
+use the full desktop (Looking Glass) for GPU-heavy programs such as ArcGIS Pro.
+ArcGIS Pro 3.8 needs the .NET 10 Desktop Runtime (installed 2026-11-20 from aka.ms/dotnet/10.0, Microsoft-signed).
 
 ## Setup
 ### Windows (done from Linux with `wexec win10-gpu '<PowerShell>'`, no clicks)
@@ -75,7 +77,7 @@ HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp     Us
 HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList  fDisabledAllowList = 1
 HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services                 fAllowUnlistedRemotePrograms = 1
 HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layout                         IgnoreRemoteKeyboardLayout = 1
-HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services                 bEnumerateHWBeforeSW = 0   (no GTX in RDP sessions, see below)
+HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services                 bEnumerateHWBeforeSW = 1   (GTX renders app windows; AVC444/NVENC stay off)
 HKU\<user SID>\...\Explorer\VisualEffects                                      VisualFXSetting = 2   (no shadows/animations)
 HKU\<user SID>\Control Panel\Desktop                                            UserPreferencesMask = 90 12 03 80 10 00 00 00, FontSmoothing = 2
 Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'; gpupdate /target:computer /force
