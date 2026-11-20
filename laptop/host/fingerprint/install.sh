@@ -34,7 +34,8 @@ grep -q "drivers/microarray" libfprint/meson.build ||
 [ -f build/build.ninja ] || meson setup build --prefix=/usr -Ddoc=false -Dgtk-examples=false -Dintrospection=true -Dinstalled-tests=false >/dev/null
 ninja -C build >/dev/null
 LIB=build/libfprint/libfprint-2.so.2.0.0
-strings "$LIB" | grep -q FpiDeviceMicroarray || { echo "build has no microarray driver"; exit 1; }
+# grep the file directly: "strings | grep -q" dies of SIGPIPE under pipefail and looks like a failure.
+grep -qa FpiDeviceMicroarray "$LIB" || { echo "build has no microarray driver"; exit 1; }
 
 echo "installing (sudo)"
 sudo snapper -c root create -d "before libfprint-microarray" || true
