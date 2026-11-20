@@ -11,14 +11,20 @@ Linux, macOS and Windows on one hybrid-GPU laptop, without rebooting:
 This folder is separate from the desktop server setup in the repo root (`host/`, `vm/`, `docs/`): nothing here
 is shared with it.
 
-## Quick use
-Easiest: app grid > **VM Switch**. It shows what is running and has a button for each switch
-(Start Windows, Shut down, Start macOS on the laptop screen, the VNC VMs, fans and lights).
-The first switch asks for your password; it is remembered for a few minutes.
+## Apps (no terminal needed)
+| App (app grid) | What | Install |
+|---|---|---|
+| **VM Switch** | See what runs; buttons to start/stop Windows on the GTX, macOS on the laptop screen, the VNC VMs | `sudo bash laptop/host/vm-switch/install.sh` |
+| **Nitro Control** | Fans (auto / max / custom), 4-zone keyboard RGB and effects, 80% battery limit, live RPM and temps | `sudo bash laptop/host/nitrosense/install.sh` |
+| **Windows (GTX 1650)** | Starts Windows and opens its window in one click | part of `01-host-setup.sh` |
 
-![VM Switch](docs/img/vm-switch.png)
+The first GPU switch asks for your password; it is remembered for a few minutes.
 
-The same from a terminal:
+| VM Switch | Nitro Control |
+|---|---|
+| ![VM Switch](docs/img/vm-switch.png) | ![Nitro Control](docs/img/nitro-control.png) |
+
+## Quick use (terminal)
 
 | From | To | Do this | Time |
 |---|---|---|---|

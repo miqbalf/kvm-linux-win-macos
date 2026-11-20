@@ -4,6 +4,8 @@ Acer's NitroSense app is Windows only. On Linux the same controls come from the 
 (a fork of the stock `acer_wmi` driver), plus a small app and command from this repo.
 
 ## Use
+![Nitro Control](img/nitro-control.png)
+
 - App grid > **Nitro Control**: live fan RPM and temperatures, fan mode (Auto / Max / Custom % per fan),
   keyboard effect and colors per zone, brightness, speed, direction, lights off, "Stop charging at 80%".
   Changes apply right away.
