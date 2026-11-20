@@ -129,7 +129,7 @@ install -m 755 laptop/host/gpu-mode /usr/local/sbin/gpu-mode
 install -m 755 laptop/host/touchpad-bridge /usr/local/sbin/touchpad-bridge
 install -m 644 laptop/host/udev/62-gpu-mode-touchpad.rules /etc/udev/rules.d/62-gpu-mode-touchpad.rules
 udevadm control --reload
-[ -f "$IMG/macos/opencore-igpu.img" ] || echo "TODO: build opencore-igpu.img: sudo bash laptop/vm/macos/build-igpu-image.sh <IntelGopDriver.efi> (README)"
+[ -f "$IMG/macos/opencore-igpu.img" ] || echo "TODO: build opencore-igpu.img: sudo bash laptop/vm/macos/build-igpu-image.sh <IntelGopDriver.efi> (laptop/docs/03-macos.md)"
 
 say "DONE. No reboot needed. Check: sudo bash laptop/host/02-verify.sh"
 echo "Start VMs only on request: sudo virsh start win10 | sudo virsh start macos"

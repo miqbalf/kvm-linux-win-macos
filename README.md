@@ -1,5 +1,8 @@
 # GPU passthrough home server: macOS (and Windows) VMs on KVM
 
+Two hosts in this repo: the desktop server (repo root: `host/`, `vm/`, `scripts/`, `docs/`) and a laptop
+(`laptop/`, own README and docs). This page is the desktop.
+
 Field notes and working config for turning a desktop PC into an always-on Linux server that also runs
 macOS (the main desktop, used remotely) and an occasional Windows VM, each with a passed-through AMD GPU.
 All remote access goes over Tailscale; nothing here needs a public IP.
@@ -33,7 +36,7 @@ RDP is for Windows (port 3389), Screen Sharing/VNC is for macOS (port 5900). Err
 | docs/05-windows-vm.md | Windows VM and GPU passthrough |
 | docs/06-troubleshooting.md | Symptom to fix table |
 | docs/07-storage-and-usb.md | Share an internal disk with all VMs over SMB; USB passthrough |
-| laptop/README.md | Second host: hybrid-GPU laptop (Intel iGPU + GTX 1650) on CachyOS; macOS on the laptop panel with the iGPU passed through (`gpu-mode mac|host`) |
+| laptop/ | **Second, separate host:** Acer Nitro laptop (Intel iGPU + GTX 1650, CachyOS). Linux + macOS on the laptop panel (iGPU passthrough) + Windows on the GTX in a Looking Glass window. Start at laptop/README.md |
 | host/, vm/, scripts/ | The actual files |
 
 Placeholders: `${TAILSCALE_IP}`, `<host>` (host Tailscale name). Replace with your own. Never commit real IPs, VNC passwords or OpenCore serials.

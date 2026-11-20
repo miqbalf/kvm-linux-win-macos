@@ -14,3 +14,9 @@ Rules
 - Switch OS on GPU 1 with `vm-switch <macos|win10-gpu>` (runs `gpu1-reset 2`: remove, bus reset, rescan with autoprobe OFF). NEVER bind amdgpu to GPU 1 or reset it with raw setpci without removing it first: amdgpu bind crashed the host. vmctl blocks macOS after Windows until the GPU was reset.
 
 - Storage: share a plain data disk to the VMs over SMB (docs/07), never attach one raw disk to two guests, never share the disk holding VM images or Docker data (SSD_DATA). SMB must stay on virbr0 + Tailscale only. USB: scripts/usbctl, untested on storage sticks.
+
+Laptop host (`laptop/`, Acer Nitro, separate from the desktop rules above)
+- Read laptop/README.md and laptop/docs/05-lessons-learned.md first.
+- Never bind the GTX 1650 to vfio-pci at boot, never blacklist nvidia, never hand-edit limine.conf (black screen, 2026-11-19). GPU switches only via `gpu-mode` / `win-gpu`.
+- Hackintosh disk only through the overlay on `/dev/hackintosh-disk` (nvme numbering swaps).
+- Take a snapper snapshot before boot, driver or kernel-module changes.

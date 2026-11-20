@@ -2,7 +2,7 @@
 # build-igpu-image.sh - build the OpenCore image for macOS on the laptop panel (domain macos-igpu).
 # Run on the laptop in HOST mode (needs i915 for the VBT), from the repo root:
 #   sudo bash laptop/vm/macos/build-igpu-image.sh <IntelGopDriver.efi>
-# Input: the Intel GOP driver extracted from this laptop's BIOS (README "Get the Intel GOP").
+# Input: the Intel GOP driver extracted from this laptop's BIOS (laptop/docs/03-macos.md, "One-time build").
 # Output, in /var/lib/libvirt/images/macos/ (the previous image is kept as *.prev):
 #   igd-gop.rom          GOP as PCI option ROM (IGD legacy mode in QEMU requires a ROM)
 #   opencore-igpu.img    opencore-lt.img + iGPU config.plist + PlatformGopPolicy.efi + IntelGopDriver.efi
