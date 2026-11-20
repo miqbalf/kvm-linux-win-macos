@@ -1,0 +1,12 @@
+[Unit]
+Description=Name Windows app windows (WinApps/FreeRDP RAIL) for the GNOME dock
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/share/winapps/venv/bin/python3 %h/.local/bin/winapps-rail-names
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

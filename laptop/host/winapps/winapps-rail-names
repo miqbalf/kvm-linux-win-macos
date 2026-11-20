@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""winapps-rail-names - give every Windows app window (FreeRDP RemoteApp) a proper name in the GNOME dock.
+
+FreeRDP names RemoteApp windows RAIL:<id> when no /wm-class is set. This watcher renames each one from its
+title: if the title contains the name of a Windows launcher (winapps-sync), the window gets that launcher's
+name (same icon, running dot, grouping); otherwise it gets the title itself and keeps the icon Windows sends.
+So an installer opened from Edge shows as the installer, not as Edge.
+
+Runs as the user service winapps-rail-names.service (needs python-xlib, in ~/.local/share/winapps/venv).
+"""
+import glob, os, re
+from Xlib import X, display, error
+from Xlib.protocol import event
+
+APPS_GLOB = os.path.expanduser("~/.local/share/applications/*.desktop")
+
+
+def launcher_names():
+    names = []
+    for f in glob.glob(APPS_GLOB):
+        try:
+            txt = open(f, errors="replace").read()
+        except OSError:
+            continue
+        if "winapps" not in txt:
+            continue
+        m = re.search(r"^StartupWMClass=(.+)$", txt, re.M) or re.search(r"^Name=(.+)$", txt, re.M)
+        if m and m.group(1).strip().lower() not in ("windows",):
+            names.append(m.group(1).strip())
+    return sorted(set(names), key=len, reverse=True)       # longest first: "ArcGIS Pro" before "Pro"
+
+
+def main():
+    d = display.Display()
+    root = d.screen().root
+    NET_NAME, UTF8 = d.intern_atom("_NET_WM_NAME"), d.intern_atom("UTF8_STRING")
+    STATE, SKIP_TB, SKIP_PG = (d.intern_atom(a) for a in
+                               ("_NET_WM_STATE", "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"))
+
+    def hide_from_dock(w):
+        # FreeRDP maps some helper windows of the Windows shell: 1x1 px, no title. Keep them out of the dock.
+        ev = event.ClientMessage(window=w, client_type=STATE, data=(32, [1, SKIP_TB, SKIP_PG, 1, 0]))
+        root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+        w.set_wm_class("winapps-helper", "Windows helper")
+    root.change_attributes(event_mask=X.SubstructureNotifyMask)
+
+    def title(w):
+        p = w.get_full_property(NET_NAME, UTF8)
+        if p and p.value:
+            return p.value.decode("utf-8", "replace") if isinstance(p.value, bytes) else str(p.value)
+        n = w.get_wm_name()
+        return n.decode("utf-8", "replace") if isinstance(n, bytes) else (n or "")
+
+    def fix(w):
+        try:
+            cls = w.get_wm_class()
+            if not cls or not cls[1].startswith("RAIL:"):
+                return
+            t = title(w).strip()
+            g = w.get_geometry()
+            if g.width <= 2 or g.height <= 2:
+                if w.get_attributes().map_state == X.IsViewable:
+                    hide_from_dock(w)
+                    d.flush()
+                else:
+                    w.change_attributes(event_mask=X.PropertyChangeMask | X.StructureNotifyMask)
+                return
+            if not t:
+                w.change_attributes(event_mask=X.PropertyChangeMask)     # title comes later
+                return
+            name = next((n for n in launcher_names() if n.lower() in t.lower()), t)
+            w.set_wm_class(name.lower(), name)
+            d.flush()
+        except error.XError:
+            pass
+
+    for w in root.query_tree().children:
+        fix(w)
+    while True:
+        e = d.next_event()
+        if e.type in (X.CreateNotify, X.MapNotify, X.ConfigureNotify):
+            fix(e.window)
+        elif e.type == X.PropertyNotify:
+            fix(e.window)
+
+
+if __name__ == "__main__":
+    main()

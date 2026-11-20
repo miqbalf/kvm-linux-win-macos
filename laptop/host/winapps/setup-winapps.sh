@@ -65,6 +65,11 @@ cd "$SRC" && bash setup.sh --user --setupAllOfficiallySupportedApps   # no menus
 # One dock icon per Windows window, with that window's own icon: drop WinApps' fixed /wm-class
 # (with it, every window of a connection, e.g. an installer opened from Edge, shows as Edge).
 sed -i '/\/wm-class:"\$FULL_NAME" \\$/d' "$HOME/.local/bin/winapps-src/bin/winapps"
+# Without /wm-class FreeRDP names windows RAIL:<id>; this watcher renames them from their titles.
+python3 -m venv "$HOME/.local/share/winapps/venv" && "$HOME/.local/share/winapps/venv/bin/pip" install -q python-xlib
+install -Dm755 "$HERE/winapps-rail-names" "$HOME/.local/bin/winapps-rail-names"
+install -Dm644 "$HERE/winapps-rail-names.service" "$HOME/.config/systemd/user/winapps-rail-names.service"
+systemctl --user daemon-reload && systemctl --user enable --now winapps-rail-names.service
 # Every Start-menu program into the app grid folder "Windows" (VM Switch re-runs this at each Windows start).
 install -Dm755 "$HERE/winapps-sync" "$HOME/.local/bin/winapps-sync"
 "$HOME/.local/bin/winapps-sync"

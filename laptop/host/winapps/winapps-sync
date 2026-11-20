@@ -203,7 +203,7 @@ def main():
         keep.add(f)
         write(f"{DESK}/{f}", "[Desktop Entry]\nType=Application\n"
               f"Name={name}\nComment={name} (Windows)\nExec={os.path.realpath(sys.argv[0])} --open {aid} %F\nIcon={icon}\n"
-              f"Categories=WinApps;\nTerminal=false\n")
+              f"StartupWMClass={name}\nCategories=WinApps;\nTerminal=false\n")
 
     # Launchers of programs no longer in Windows.
     gone = 0

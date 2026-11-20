@@ -56,11 +56,15 @@ in the desktop session: a second copy hands off to the hidden one and exits, so 
 2026-11-20: Edge left open on the Looking Glass desktop, Edge app window never showed). The launchers run
 `winapps-sync --open <id>`, which checks first and shows a notification instead: close the program on the
 desktop (VM Switch > Show desktop) or sign out there, then click again.
-Dock icons (2026-11-20): one RDP connection carries every window a program opens, so an ArcGIS installer
-started from Edge showed in the dock as Edge (same WM_CLASS from WinApps' `/wm-class`, same launcher scope).
-Now `setup-winapps.sh` removes `/wm-class` from WinApps and `winapps-sync --open` starts FreeRDP in its own
-systemd scope: each window is `RAIL:<id>` and GNOME shows it with the icon Windows sends for it, one dock
-entry per window. Cost: a pinned launcher does not light up as "running".
+Dock names and icons (2026-11-20): one RDP connection carries every window a program opens, so an ArcGIS
+installer started from Edge showed in the dock as Edge (WinApps' fixed `/wm-class`, and GNOME maps windows to
+the launcher's systemd scope). Without `/wm-class`, FreeRDP calls every window `RAIL:<id>` ("RAIL" = the
+RemoteApp part of RDP) and the dock showed "Rail". Now:
+- `setup-winapps.sh` removes `/wm-class` from WinApps; `winapps-sync --open` starts FreeRDP in its own scope;
+- `winapps-rail-names` (user service, python-xlib in `~/.local/share/winapps/venv`) renames each `RAIL:` window
+  from its title: title contains a launcher name (e.g. "Microsoft Edge") -> that launcher (its icon, running dot);
+  otherwise the title itself, with the icon Windows sends. 1x1 px untitled helper windows of the Windows shell
+  are hidden from the dock (`_NET_WM_STATE_SKIP_TASKBAR`).
 The Deskflow client inside Windows runs in the desktop session: app windows get the Mac mouse through the
 laptop (they are normal Linux windows).
 
