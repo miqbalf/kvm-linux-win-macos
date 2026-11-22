@@ -28,6 +28,7 @@ P=~/.config/linux-rdp-password
 g() { grdctl --headless "$@" 2>&1 | grep -vE 'TPM|x509_utils|certificate is invalid' || true; }
 g rdp set-tls-cert "$D/rdp-tls.crt"; g rdp set-tls-key "$D/rdp-tls.key"
 g rdp set-credentials "$(id -un)" "$(cat "$P")"; g rdp disable-view-only; g rdp enable
+rm -f ~/.config/systemd/user/linux-headless-shell.service.d/test.conf   # test override from 2026-11-22
 systemctl --user daemon-reload
 USER
 if systemctl is-active -q ufw; then

@@ -155,7 +155,7 @@ in the VM and a VM SSDT describing the touchpad (polling mode, its GPIO interrup
 
 ## Linux over RDP while macOS has the screen (2026-11-22)
 In mac mode GDM is stopped and the panel belongs to macOS, so Linux had no desktop at all. Now `gpu-mode mac`
-starts a headless GNOME Shell (virtual 1920x1080 monitor, software rendering) plus `gnome-remote-desktop
+starts a headless GNOME Shell (software rendering; the RDP server creates the monitor at the client's size) plus `gnome-remote-desktop
 --headless` for the desktop user, and `gpu-mode host` stops both before GDM starts (they must never run next
 to the real session: both own `org.gnome.Mutter.*` on the same session bus).
 
@@ -164,6 +164,9 @@ TLS certificate, random password in `~/.config/linux-rdp-password`, ufw port 338
 Connect with Windows App / Microsoft Remote Desktop (or `xfreerdp`) to the laptop on port 3389 as the Linux
 user. Address: the built-in Wi-Fi address in plain `gpu-mode mac`; the USB dongle address with `--wifi`/`--radios`
 (the built-in card is with macOS then).
+
+Tested 2026-11-22 from Windows App on the Mac: top bar, dock and apps work. First try showed only the wallpaper:
+the shell also had a fixed `--virtual-monitor`, so RDP got a second, empty monitor; removed.
 
 Limits: a bare GNOME Shell, no full gnome-session (settings daemons not running); software rendering, so
 video and 3D are slow. Mesa still probes the GTX render node at start (log: `pci id ... 10de:1f99`).

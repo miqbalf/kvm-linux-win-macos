@@ -1,4 +1,4 @@
-# User unit: a headless GNOME Shell (virtual 1920x1080 monitor) for RDP while macOS has the laptop screen.
+# User unit: a headless GNOME Shell for RDP while macOS has the laptop screen.
 # Started/stopped by `gpu-mode mac` / `gpu-mode host` through linux-headless-rdp.target; never runs next to
 # the real desktop session (both would own org.gnome.Mutter.* on the same session bus).
 # Software rendering: the iGPU is with macOS and the GTX 1650 must stay free for Windows.
@@ -8,6 +8,8 @@ PartOf=linux-headless-rdp.target
 
 [Service]
 Environment=XDG_SESSION_TYPE=wayland LIBGL_ALWAYS_SOFTWARE=1 __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-ExecStart=/usr/bin/gnome-shell --headless --virtual-monitor 1920x1080
+# No --virtual-monitor: gnome-remote-desktop creates the monitor at the client's size on connect. With a fixed
+# one as well, the top bar and dock sat on that monitor and RDP showed a second, empty one (wallpaper only).
+ExecStart=/usr/bin/gnome-shell --headless
 Restart=on-failure
 RestartSec=3
