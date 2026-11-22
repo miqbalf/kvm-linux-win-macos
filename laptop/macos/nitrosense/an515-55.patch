@@ -1,0 +1,425 @@
+From 688269ff30f65f4e3a73fd678e370ecc04614907 Mon Sep 17 00:00:00 2001
+From: kvm-linux-win-macos <noreply@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 13:32:23 +0700
+Subject: [PATCH] AN515-55 port
+
+---
+ CLI/main.swift       |   2 +
+ Core/NitroCore.swift |  46 ++++++-----
+ Kext/Info.plist      |  15 +++-
+ Kext/NitroEC.cpp     | 182 +++++++++++++++++++++----------------------
+ Kext/NitroEC.hpp     |   8 +-
+ 5 files changed, 137 insertions(+), 116 deletions(-)
+
+diff --git a/CLI/main.swift b/CLI/main.swift
+index 64e741d..bc0f0e3 100644
+--- a/CLI/main.swift
++++ b/CLI/main.swift
+@@ -47,6 +47,8 @@ func ledCommand(_ ec: NitroEC, _ args: [String]) throws {
+         for zone in zones {
+             try checkWMBH(try ec.wmbh(0x06, [zone, r, g, b]), "zone colour")
+         }
++        // AN515-55: zone colours only show after a plain static mode is re-applied.
++        try applyStaticAfterZones(ec, brightness: led.brightness)
+     case "effect":
+         guard args.count >= 2, let index = ledEffects.firstIndex(of: args[1].lowercased()) else {
+             throw NitroECError(description: "effect must be one of: \(ledEffects.joined(separator: " "))")
+diff --git a/Core/NitroCore.swift b/Core/NitroCore.swift
+index a9b9255..518858b 100644
+--- a/Core/NitroCore.swift
++++ b/Core/NitroCore.swift
+@@ -238,6 +238,8 @@ enum FanUnit: CaseIterable {
+ }
+ 
+ func setPSEE(_ ec: NitroEC, _ on: Bool) throws {
++    // AN515-55: no raw EC writes; the firmware WMBH calls do not need PSEE.
++    return
+     let current = Int(try ec.readByte(UInt8(Reg.battery)))
+     let wanted = on ? current | 0x10 : current & ~0x10
+     if wanted != current {
+@@ -261,25 +263,24 @@ func setFan(_ ec: NitroEC, _ units: [FanUnit], mode: String, percent: Int?, viaW
+         }
+     }
+ 
+-    try setPSEE(ec, true)
++    // AN515-55: fan behavior via firmware WMBH 0x0E [mask, 0, mode bits], then
++    // manual duty via WMBH 0x10 [group, percent] (Linuwu-Sense sequence).
++    let modeBits: UInt8
++    switch mode {
++    case "auto": modeBits = 1
++    case "max": modeBits = 2
++    case "manual": modeBits = 3
++    default: throw NitroECError(description: "fan mode must be auto, max or manual")
++    }
++    var mask: UInt8 = 0, bits: UInt8 = 0
+     for unit in units {
+-        switch mode {
+-        case "auto":
+-            try ec.writeByte(unit.modeReg, unit.auto)
+-        case "max":
+-            try ec.writeByte(unit.modeReg, unit.max)
+-        case "manual":
+-            if viaWMI {
+-                let result = try ec.wmbh(0x10, [unit.wmbhGroup, UInt8(percent!)])
+-                guard result.first == 0 else {
+-                    throw NitroECError(description: "firmware WMBH 0x10 returned status \(result.first ?? 0xFF)")
+-                }
+-            } else {
+-                try ec.writeByte(unit.speedReg, percent!)
+-            }
+-            try ec.writeByte(unit.modeReg, unit.manual)
+-        default:
+-            throw NitroECError(description: "fan mode must be auto, max or manual")
++        mask |= unit == .cpu ? 0x01 : 0x08
++        bits |= unit == .cpu ? modeBits : modeBits << 6
++    }
++    try checkWMBH(try ec.wmbh(0x0E, [mask, 0, bits]), "fan \(mode)")
++    if mode == "manual" {
++        for unit in units {
++            try checkWMBH(try ec.wmbh(0x10, [unit.wmbhGroup, UInt8(percent!)]), "fan speed")
+         }
+     }
+ }
+@@ -395,3 +396,12 @@ func applyLED(_ ec: NitroEC, _ led: LEDState) throws {
+     try checkWMBH(try ec.wmbh(0x14, bytes), "LED effect")
+ }
+ 
++
++// AN515-55 (Linuwu-Sense an515_58_rgb_fix): after per-zone colours, WMBH 0x14 with
++// only brightness (byte 2) and byte 9 = 1 makes the zones visible.
++func applyStaticAfterZones(_ ec: NitroEC, brightness: UInt8) throws {
++    var bytes = [UInt8](repeating: 0, count: 16)
++    bytes[2] = brightness
++    bytes[9] = 1
++    try checkWMBH(try ec.wmbh(0x14, bytes), "static mode after zones")
++}
+diff --git a/Kext/Info.plist b/Kext/Info.plist
+index d48f0b1..210810c 100644
+--- a/Kext/Info.plist
++++ b/Kext/Info.plist
+@@ -15,9 +15,9 @@
+ 	<key>CFBundlePackageType</key>
+ 	<string>KEXT</string>
+ 	<key>CFBundleShortVersionString</key>
+-	<string>1.0.0</string>
++	<string>1.1.0-an515-55</string>
+ 	<key>CFBundleVersion</key>
+-	<string>1.0.0</string>
++	<string>1.1.55</string>
+ 	<key>IOKitPersonalities</key>
+ 	<dict>
+ 		<key>NitroEC</key>
+@@ -27,7 +27,16 @@
+ 			<key>IOClass</key>
+ 			<string>NitroEC</string>
+ 			<key>IONameMatch</key>
+-			<string>NTRO0001</string>
++			<string>PNP0C14</string>
++			<key>IOPropertyMatch</key>
++			<dict>
++				<key>_UID</key>
++				<string>APGe</string>
++			</dict>
++			<key>ECBase</key>
++			<integer>4236118016</integer>
++			<key>IOProbeScore</key>
++			<integer>1000</integer>
+ 			<key>IOProviderClass</key>
+ 			<string>IOACPIPlatformDevice</string>
+ 			<key>IOUserClientClass</key>
+diff --git a/Kext/NitroEC.cpp b/Kext/NitroEC.cpp
+index a163aa7..0dad3f7 100644
+--- a/Kext/NitroEC.cpp
++++ b/Kext/NitroEC.cpp
+@@ -36,6 +36,7 @@ enum : uint32_t {
+     kWMBHGetSensor   = 0x05,  // also sets PSEE
+     kWMBHSetZoneRGB  = 0x06,
+     kWMBHGetZoneRGB  = 0x07,
++    kWMBHSetFanMode  = 0x0E,  // AN515-55 fan behavior: [mask (1 CPU, 8 GPU), 0, mode bits]
+     kWMBHSetFanSpeed = 0x10,
+     kWMBHGetFanSpeed = 0x11,
+     kWMBHGetFanTable = 0x13,
+@@ -94,8 +95,23 @@ bool NitroEC::isWMBHAllowed(uint32_t opcode, const uint8_t *in) {
+     case kWMBHSetZoneRGB:
+     case kWMBHGetZoneRGB:
+         return isZoneMask(in[0]);
++    case kWMBHSetFanMode: {
++        // Byte 2: CPU mode in bits 0-1, GPU mode in bits 6-7 (1 auto, 2 max, 3 manual),
++        // as Linuwu-Sense sends it on AN515-55. Only fields named in the mask may be set.
++        uint8_t mask = in[0], mode = in[2];
++        if ((mask != 0x01 && mask != 0x08 && mask != 0x09) || in[1] || !isZeroFrom(in, 3))
++            return false;
++        uint8_t cpu = mode & 0x03, gpu = (mode >> 6) & 0x03;
++        if (mode & 0x3C)
++            return false;
++        if (mask & 0x01 ? cpu == 0 : cpu != 0)
++            return false;
++        if (mask & 0x08 ? gpu == 0 : gpu != 0)
++            return false;
++        return true;
++    }
+     case kWMBHSetFanSpeed:
+-        return isFanGroup(in[0]) && in[1] >= kFanSpeedMin && in[1] <= kFanSpeedMax;
++        return isFanGroup(in[0]) && in[1] >= kFanSpeedMin && in[1] <= kFanSpeedMax && isZeroFrom(in, 2);
+     case kWMBHGetFanSpeed:
+         return isFanGroup(in[0]);
+     case kWMBHGetFanTable:
+@@ -132,31 +148,67 @@ bool NitroEC::start(IOService *provider) {
+         return false;
+     }
+ 
+-    UInt32 version = 0;
+-    if (acpi->evaluateInteger("VERS", &version) != kIOReturnSuccess || version != kNitroECACPIVersion) {
+-        LOG("SSDT-NITRO missing or wrong version (got %u, want %u)", version, kNitroECACPIVersion);
++    // The gaming WMI method must exist on this WMI device.
++    if (acpi->validateObject("WMBH") != kIOReturnSuccess) {
++        LOG("WMBH not found on %s, not an Acer gaming WMI device", provider->getName());
++        return false;
++    }
++    hasWMBE = acpi->validateObject("WMBE") == kIOReturnSuccess;
++
++    OSNumber *base = OSDynamicCast(OSNumber, getProperty("ECBase"));
++    if (!base) {
++        LOG("ECBase missing from personality");
++        return false;
++    }
++
++    // Physical address: firmware EC RAM mirror. (withAddressRange + kernel_task would
++    // treat it as a kernel virtual address and page-fault on first read.)
++    IOMemoryDescriptor *md = IOMemoryDescriptor::withPhysicalAddress(
++        static_cast<IOPhysicalAddress>(base->unsigned64BitValue()), kNitroECDumpSize, kIODirectionIn);
++    if (!md)
++        return false;
++    ecMap = md->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapInhibitCache | kIOMapReadOnly);
++    md->release();
++    if (!ecMap) {
++        LOG("cannot map EC window 0x%llx", base->unsigned64BitValue());
++        return false;
++    }
++    ecRAM = reinterpret_cast<volatile const uint8_t *>(ecMap->getVirtualAddress());
++    if (!ecRAM || ecMap->getPhysicalAddress() != base->unsigned64BitValue()) {
++        LOG("EC window mapped wrong (va %p, pa 0x%llx)", ecRAM, ecMap->getPhysicalAddress());
++        ecRAM = nullptr;
++        OSSafeReleaseNULL(ecMap);
+         return false;
+     }
+ 
+     lock = IOLockAlloc();
+-    if (!lock)
++    if (!lock) {
++        OSSafeReleaseNULL(ecMap);
+         return false;
++    }
+ 
+     acpi->retain();
+ 
+-    uint8_t cpuTemp = 0;
+-    if (readByte(0xB0, &cpuTemp) == kIOReturnSuccess)
+-        LOG("started, SSDT v%u, CPU temp %u C", version, cpuTemp);
++    LOG("started on %s, EC 0x%llx, CPU %u C, CPU fan %u rpm, WMBE %s", provider->getName(),
++        base->unsigned64BitValue(), ecRAM[0xB0], ecRAM[0x13] | (ecRAM[0x14] << 8), hasWMBE ? "yes" : "no");
+ 
+-    setProperty("NitroEC SSDT Version", version, 32);
++    setProperty("NitroEC SSDT Version", kNitroECACPIVersion, 32);
++    setProperty("NitroEC Model", "AN515-55");
+     registerService();
+     return true;
+ }
+ 
+ void NitroEC::stop(IOService *provider) {
+-    // Never leave the fans in manual mode without a driver behind them.
+-    writeByte(kRegCPUFanMode, kCPUFanAuto);
+-    writeByte(kRegGPUFanMode, kGPUFanAuto);
++    // Never leave the fans in manual mode without a driver behind them:
++    // WMBH 0x0E fan behavior, CPU+GPU auto.
++    if (acpi) {
++        uint8_t in[kNitroECWMBHInSize] = {0x09, 0x00, 0x41};
++        uint8_t out[kNitroECWMBHOutSize];
++        uint32_t outLength = sizeof(out);
++        callWMI("WMBH", 0x0E, in, out, &outLength);
++    }
++    OSSafeReleaseNULL(ecMap);
++    ecRAM = nullptr;
+     OSSafeReleaseNULL(acpi);
+     IOService::stop(provider);
+ }
+@@ -172,91 +224,26 @@ void NitroEC::free() {
+ IOReturn NitroEC::readByte(uint32_t offset, uint8_t *value) {
+     if (offset >= kNitroECDumpSize || !value)
+         return kIOReturnBadArgument;
+-
+-    OSNumber *arg = OSNumber::withNumber(offset, 32);
+-    if (!arg)
+-        return kIOReturnNoMemory;
+-
+-    OSObject *params[] = {arg};
+-    UInt32 result = 0;
+-    IOLockLock(lock);
+-    IOReturn ret = acpi->evaluateInteger("RE1B", &result, params, 1);
+-    IOLockUnlock(lock);
+-    arg->release();
+-
+-    if (ret != kIOReturnSuccess)
+-        return ret;
+-    if (result > 0xFF)
+-        return kIOReturnError;
+-
+-    *value = static_cast<uint8_t>(result);
++    if (!ecRAM)
++        return kIOReturnNotReady;
++    *value = ecRAM[offset];
+     return kIOReturnSuccess;
+ }
+ 
+ IOReturn NitroEC::dump(uint8_t *buffer, uint32_t length) {
+     if (!buffer || length < kNitroECDumpSize)
+         return kIOReturnBadArgument;
+-
+-    OSObject *result = nullptr;
+-    IOLockLock(lock);
+-    IOReturn ret = acpi->evaluateObject("RDMP", &result);
+-    IOLockUnlock(lock);
+-    if (ret != kIOReturnSuccess)
+-        return ret;
+-
+-    OSData *data = OSDynamicCast(OSData, result);
+-    if (!data || data->getLength() < kNitroECDumpSize) {
+-        OSSafeReleaseNULL(result);
+-        return kIOReturnUnderrun;
+-    }
+-
+-    memcpy(buffer, data->getBytesNoCopy(), kNitroECDumpSize);
+-    result->release();
++    if (!ecRAM)
++        return kIOReturnNotReady;
++    for (uint32_t i = 0; i < kNitroECDumpSize; i++)
++        buffer[i] = ecRAM[i];
+     return kIOReturnSuccess;
+ }
+ 
+ IOReturn NitroEC::writeByte(uint32_t offset, uint32_t value) {
+-    if (!isWriteAllowed(offset, value)) {
+-        LOG("refused write 0x%02X = 0x%02X (not whitelisted)", offset, value);
+-        return kIOReturnNotPermitted;
+-    }
+-    if (!acpi)
+-        return kIOReturnNotReady;
+-
+-    if (offset == kRegPowerFlags) {
+-        uint8_t current = 0;
+-        IOReturn ret = readByte(offset, &current);
+-        if (ret != kIOReturnSuccess)
+-            return ret;
+-        if ((current ^ value) & ~kPSEEBit) {
+-            LOG("refused write 0x03 = 0x%02X (only PSEE may change, current 0x%02X)", value, current);
+-            return kIOReturnNotPermitted;
+-        }
+-    }
+-
+-    OSNumber *argOffset = OSNumber::withNumber(offset, 32);
+-    OSNumber *argValue = OSNumber::withNumber(value, 32);
+-    if (!argOffset || !argValue) {
+-        OSSafeReleaseNULL(argOffset);
+-        OSSafeReleaseNULL(argValue);
+-        return kIOReturnNoMemory;
+-    }
+-
+-    OSObject *params[] = {argOffset, argValue};
+-    UInt32 result = 0;
+-    IOLockLock(lock);
+-    IOReturn ret = acpi->evaluateInteger("WE1B", &result, params, 2);
+-    IOLockUnlock(lock);
+-    argOffset->release();
+-    argValue->release();
+-
+-    if (ret != kIOReturnSuccess)
+-        return ret;
+-    if (result != 0)
+-        return kIOReturnError;
+-
+-    LOG("wrote 0x%02X = 0x%02X", offset, value);
+-    return kIOReturnSuccess;
++    // AN515-55: no raw EC writes. Fans go through WMBH 0x0E / 0x10 instead.
++    LOG("refused write 0x%02X = 0x%02X (raw EC writes are off on AN515-55)", offset, value);
++    return kIOReturnUnsupported;
+ }
+ 
+ IOReturn NitroEC::callWMBH(uint32_t opcode, const uint8_t *in, uint8_t *out, uint32_t *outLength) {
+@@ -264,7 +251,7 @@ IOReturn NitroEC::callWMBH(uint32_t opcode, const uint8_t *in, uint8_t *out, uin
+         LOG("refused WMBH 0x%02X [%02X %02X] (not whitelisted)", opcode, in[0], in[1]);
+         return kIOReturnNotPermitted;
+     }
+-    return callWMI("WMBX", opcode, in, out, outLength);
++    return callWMI("WMBH", opcode, in, out, outLength);
+ }
+ 
+ IOReturn NitroEC::callWMBE(uint32_t method, const uint8_t *in, uint8_t *out, uint32_t *outLength) {
+@@ -272,26 +259,33 @@ IOReturn NitroEC::callWMBE(uint32_t method, const uint8_t *in, uint8_t *out, uin
+         LOG("refused WMBE 0x%02X [%02X %02X %02X] (not whitelisted)", method, in[0], in[1], in[2]);
+         return kIOReturnNotPermitted;
+     }
+-    return callWMI("WMEX", method, in, out, outLength);
++    if (!hasWMBE)
++        return kIOReturnUnsupported;
++    return callWMI("WMBE", method, in, out, outLength);
+ }
+ 
+ IOReturn NitroEC::callWMI(const char *wrapper, uint32_t opcode, const uint8_t *in, uint8_t *out, uint32_t *outLength) {
+     if (!acpi)
+         return kIOReturnNotReady;
+ 
++    OSNumber *argInstance = OSNumber::withNumber(0ULL, 32);
+     OSNumber *argOpcode = OSNumber::withNumber(opcode, 32);
+     OSData *argBuffer = OSData::withBytes(in, kNitroECWMBHInSize);
+-    if (!argOpcode || !argBuffer) {
++    if (!argInstance || !argOpcode || !argBuffer) {
++        OSSafeReleaseNULL(argInstance);
+         OSSafeReleaseNULL(argOpcode);
+         OSSafeReleaseNULL(argBuffer);
+         return kIOReturnNoMemory;
+     }
+ 
+-    OSObject *params[] = {argOpcode, argBuffer};
++    OSObject *params[] = {argInstance, argOpcode, argBuffer};
+     OSObject *result = nullptr;
+-    IOLockLock(lock);
+-    IOReturn ret = acpi->evaluateObject(wrapper, &result, params, 2);
+-    IOLockUnlock(lock);
++    if (lock)
++        IOLockLock(lock);
++    IOReturn ret = acpi->evaluateObject(wrapper, &result, params, 3);
++    if (lock)
++        IOLockUnlock(lock);
++    argInstance->release();
+     argOpcode->release();
+     argBuffer->release();
+     if (ret != kIOReturnSuccess)
+diff --git a/Kext/NitroEC.hpp b/Kext/NitroEC.hpp
+index a920696..6db5aa4 100644
+--- a/Kext/NitroEC.hpp
++++ b/Kext/NitroEC.hpp
+@@ -4,14 +4,20 @@
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOUserClient.h>
+ #include <IOKit/IOLocks.h>
++#include <IOKit/IOMemoryDescriptor.h>
+ #include <IOKit/acpi/IOACPIPlatformDevice.h>
+ 
+-// Matches \_SB.NTRO (_HID "NTRO0001") from SSDT-NITRO and exposes EC RAM reads.
++// AN515-55 port: matches the firmware WMI device \_SB.PCI0.WMID (PNP0C14, _UID "APGe")
++// directly, so no SSDT is needed. EC RAM reads come from the firmware's own
++// SystemMemory mirror (ECBase, 0xFC7E0800 on AN515-55), mapped read-only.
+ class NitroEC : public IOService {
+     OSDeclareDefaultStructors(NitroEC)
+ 
+     IOACPIPlatformDevice *acpi {nullptr};
+     IOLock *lock {nullptr};
++    IOMemoryMap *ecMap {nullptr};
++    volatile const uint8_t *ecRAM {nullptr};
++    bool hasWMBE {false};
+ 
+ public:
+     bool start(IOService *provider) override;
+-- 
+2.54.0 (Apple Git-157)
+

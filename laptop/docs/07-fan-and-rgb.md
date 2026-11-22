@@ -63,3 +63,48 @@ Or boot the snapshot "before linuwu_sense" from the Limine menu.
   `10-permissions.conf` re-applies it from `linuwu_sense.service`.
 - Do not `systemctl restart linuwu_sense.service`: its ExecStop unloads the module.
 - With an older `acer_wmi`, `modprobe acer_wmi predator_v4=1` gives fan modes until the next reboot (no RGB).
+
+## macOS (native Hackintosh)
+
+Fans and keyboard RGB also work in native macOS, using a patched copy of
+[NitroSense-macOS](https://github.com/Thatisjigen/NitroSense-macOS) (v1.1.0, written for the AN515-57).
+The patch and the scripts are in `laptop/macos/nitrosense/`.
+
+What the AN515-55 patch changes:
+- **No SSDT, no OpenCore change.** NitroEC.kext attaches straight to the firmware WMI device
+  `\_SB.PCI0.WMID` (`PNP0C14`, `_UID "APGe"`) and calls its `WMBH` method, the same method Linux
+  `linuwu_sense` uses through WMI GUID `7A4DDFE7-5B5D-40B4-8595-4408E0CC7F56`.
+- **EC reads** (temperatures, fan RPM, LED state) come from the firmware's EC RAM mirror at physical
+  address `0xFC7E0800` (DSDT region `ECMM`/`PECM`), mapped read-only. Offsets match the AN515-57.
+- **No raw EC writes.** Fans use WMBH `0x0E` (fan behaviour: `[mask 1=CPU 8=GPU, 0, mode]`, mode bits
+  CPU 0-1 / GPU 6-7, 1 auto, 2 max, 3 manual) and `0x10` (manual duty `[1|4, percent]`), as
+  `linuwu_sense` does on this laptop.
+- **RGB per zone**: WMBH `0x06 [zone, r, g, b]`, then WMBH `0x14` with only brightness and byte 9 = 1,
+  or the zones stay dark (`an515_58_rgb_fix` in `linuwu_sense`).
+
+Build and install (on the Hackintosh, Command Line Tools only):
+```
+bash laptop/macos/nitrosense/build.sh          # clones upstream to ~/src/ns55, applies the patch, builds
+bash laptop/macos/nitrosense/install.sh        # /Library/Extensions + nitroctl in /usr/local/bin
+```
+The first load asks to allow the extension, then a restart. SIP on this machine (`csr-active-config 03080000`)
+allows unsigned kexts.
+
+Use:
+```
+nitroctl status
+sudo nitroctl fan all auto | max | manual 60    # manual is refused at 90 °C or more
+sudo nitroctl led zone all 00FF00
+sudo nitroctl led zone 1 FF0000
+sudo nitroctl led effect wave
+```
+Tested 2026-11-22 on macOS 26.7.3: Max took the fans from 3125 / 3703 rpm to 5882 / 6122 rpm, Auto brought
+them back down; zone colours showed on the keyboard.
+
+Not done yet: the `nitrod` daemon and the menu-bar app still use the AN515-57 fan path (raw EC writes, which
+the patched kext refuses), so only `nitroctl` works. Settings are not restored after a reboot. In `nitroctl status`
+the "Nitro mode" and "Power" lines use AN515-57 meanings and are not reliable here.
+
+Lesson: the first build mapped `0xFC7E0800` with `IOMemoryDescriptor::withAddressRange(..., kernel_task)`,
+which treats the address as kernel-virtual, and panicked in `NitroEC::start` (page fault at `0xfc7e08b0`).
+Physical memory needs `IOMemoryDescriptor::withPhysicalAddress`.
