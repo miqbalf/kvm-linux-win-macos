@@ -3,6 +3,7 @@
 #   sudo gpu-mode mac      stop GDM, bind iGPU to vfio-pci, start macos-igpu (macOS on the laptop panel)
 #   sudo gpu-mode mac --radios  also give macOS the Wi-Fi + Bluetooth (experimental; Linux keeps only a USB dongle)
 #   sudo gpu-mode mac --wifi    only the Wi-Fi
+#   sudo gpu-mode mac --overlay old disk path (SATA on nvme1-overlay.qcow2) instead of the real NVMe
 #   sudo gpu-mode net-backup    copy the current Wi-Fi profile to a USB Wi-Fi dongle (Linux network in mac --radios)
 #   sudo gpu-mode host     stop macos-igpu, give the iGPU back to i915, start GDM
 #   sudo gpu-mode win      give the GTX 1650 to win10-gpu (Linux keeps the panel; view: looking-glass-client)
@@ -136,6 +137,42 @@ rdp_on()  { [ -f /etc/systemd/user/linux-headless-rdp.target ] || return 0
 rdp_off() { [ -f /etc/systemd/user/linux-headless-rdp.target ] || return 0
             systemctl --user -M "$DESKTOP_USER@" stop linux-headless-rdp.target linux-headless-shell.service \
               gnome-remote-desktop-headless.service >/dev/null 2>&1 || true; }
+# macOS disk: the real Samsung 980 NVMe controller (default) or the old overlay (`mac --overlay`).
+# Linux must not have anything on the Samsung mounted, open or in use as swap when macOS takes it.
+NVME_PCI=0000:07:00.0
+DISK_NVME="<hostdev mode='subsystem' type='pci' managed='yes'><source><address domain='0x0000' bus='0x07' slot='0x00' function='0x0'/></source><address type='pci' domain='0x0000' bus='0x00' slot='0x0b' function='0x0'/></hostdev>"
+DISK_OVERLAY="<disk type='file' device='disk'><driver name='qemu' type='qcow2' cache='writeback'/><source file='/var/lib/libvirt/images/macos/nvme1-overlay.qcow2'/><backingStore type='block'><format type='raw'/><source dev='/dev/hackintosh-disk'/></backingStore><target dev='sdb' bus='sata'/></disk>"
+nvme_safe() {
+  local dev p
+  [ "$(lsblk -dno MODEL /dev/hackintosh-disk 2>/dev/null)" = "Samsung SSD 980 1TB" ] || die "/dev/hackintosh-disk is not the Samsung 980"
+  dev=$(readlink -f /dev/hackintosh-disk)
+  [ "$(basename "$(readlink -f "/sys/block/${dev##*/}/device/device")")" = "$NVME_PCI" ] \
+    || die "the Samsung 980 is not at $NVME_PCI (PCI layout changed?): not passing anything through"
+  [ -z "$(lsblk -no MOUNTPOINTS "$dev" | tr -d '[:space:]')" ] || die "Linux has a Samsung partition mounted: $(lsblk -no NAME,MOUNTPOINTS "$dev" | tr '\n' ' ')"
+  for p in "$dev" "$dev"p*; do
+    [ -e "$p" ] || continue
+    grep -q "^$p " /proc/swaps && die "$p is in use as swap"
+    fuser -s "$p" 2>/dev/null && die "a Linux process has $p open: $(fuser -v "$p" 2>&1 | tail -n +2 | tr -s ' ' | tr '\n' ' ')"
+  done
+  return 0
+}
+set_disk() {   # $1 = nvme|overlay, in the persistent domain
+  local x; x=$(virsh dumpxml --inactive "$VM")
+  if [ "$1" = nvme ]; then
+    grep -q "<target dev='sdb'" <<<"$x" && { virsh detach-disk "$VM" sdb --config >/dev/null || die "detach overlay disk failed"; }
+    if ! grep -q "bus='0x07' slot='0x00'" <<<"$x"; then
+      echo "$DISK_NVME" > /run/gpu-mode-dev.xml; virsh attach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "attach NVMe failed"
+    fi
+  else
+    if grep -q "bus='0x07' slot='0x00'" <<<"$x"; then
+      echo "$DISK_NVME" > /run/gpu-mode-dev.xml; virsh detach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "detach NVMe failed"
+    fi
+    if ! grep -q "<target dev='sdb'" <<<"$x"; then
+      echo "$DISK_OVERLAY" > /run/gpu-mode-dev.xml; virsh attach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "attach overlay disk failed"
+    fi
+  fi
+  rm -f /run/gpu-mode-dev.xml
+}
 TP_UNIT=gpu-mode-touchpad
 TP_DEV=/dev/input/gpu-mode-touchpad
 # Touchpad -> virtual mouse with tap-to-click for the VM (host/touchpad-bridge).
@@ -178,7 +215,7 @@ vtcon() { for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" "$v/na
 [ "${1:-}" = watchdog ] && { watchdog; exit 0; }
 # mac-bg: same as `mac`, but as its own system unit, so the switch survives the end of the desktop
 # session that started it (the VM Switch app runs inside GNOME, which `mac` stops).
-[ "${1:-}" = mac-bg ] && exec systemd-run -q --collect --unit=gpu-mode-switch /usr/local/sbin/gpu-mode mac ${2:-}
+[ "${1:-}" = mac-bg ] && exec systemd-run -q --collect --unit=gpu-mode-switch /usr/local/sbin/gpu-mode mac "${@:2}"
 exec 9>/run/gpu-mode.lock
 flock -w 300 9 || die "another gpu-mode is still running"
 
@@ -266,9 +303,17 @@ to_mac() {
   [ "$(state macos)" = "shut off" ] || die "domain 'macos' is running: it shares the disk overlay, shut it down first"
   [ "$(state $VM)" = "shut off" ] || die "$VM is $(state $VM)"
   [ -f /var/lib/libvirt/images/macos/opencore-igpu.img ] || die "opencore-igpu.img missing"
-  # NVMe numbering swaps between boots: the overlay must sit on the Samsung, never on the host disk.
-  [ "$(lsblk -dno MODEL /dev/hackintosh-disk 2>/dev/null)" = "Samsung SSD 980 1TB" ] || die "/dev/hackintosh-disk is not the Samsung 980"
-  check_overlay
+  if [ "$DISK" = nvme ]; then
+    nvme_safe
+    set_disk nvme
+    log "macOS gets the real Samsung 980 (NVMe passthrough): Linux loses /dev/hackintosh-disk until macOS stops"
+  else
+    # NVMe numbering swaps between boots: the overlay must sit on the Samsung, never on the host disk.
+    [ "$(lsblk -dno MODEL /dev/hackintosh-disk 2>/dev/null)" = "Samsung SSD 980 1TB" ] || die "/dev/hackintosh-disk is not the Samsung 980"
+    set_disk overlay
+    check_overlay
+    qemu-img info -U "$OVERLAY" 2>/dev/null | grep -q 'backing file: /dev/hackintosh-disk' || die "overlay is not backed by /dev/hackintosh-disk"
+  fi
   if [ "$RADIOS" != off ]; then
     lspci -s 09:00.0 -n | grep -q '14e4:43a0' || die "Wi-Fi 09:00.0 is not the BCM4360"
     set_radios "$RADIOS"
@@ -277,7 +322,6 @@ to_mac() {
   else
     set_radios off
   fi
-  qemu-img info -U "$OVERLAY" 2>/dev/null | grep -q 'backing file: /dev/hackintosh-disk' || die "overlay is not backed by /dev/hackintosh-disk"
 
   save_bl
   log "stopping GDM (host desktop closes)"
@@ -342,9 +386,13 @@ to_host() {
   to_host_hw
 }
 
-RADIOS=off
-[ "${2:-}" = --radios ] && RADIOS=on
-[ "${2:-}" = --wifi ] && RADIOS=wifi
+RADIOS=off; DISK=nvme
+for a in "${@:2}"; do
+  case "$a" in
+    --radios) RADIOS=on ;; --wifi) RADIOS=wifi ;; --overlay) DISK=overlay ;;
+    *) echo "unknown option $a"; exit 2 ;;
+  esac
+done
 case "${1:-status}" in
   mac) to_mac; status ;;
   host) to_host; status ;;
@@ -355,5 +403,5 @@ case "${1:-status}" in
   new-overlay)
     [ "$(state $VM)" = "shut off" ] && [ "$(state macos)" = "shut off" ] || die "shut down the macOS VMs first"
     new_overlay ;;
-  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status|new-overlay|net-backup  (mac/mac-bg [--radios])"; exit 2 ;;
+  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status|new-overlay|net-backup  (mac/mac-bg [--radios|--wifi] [--overlay])"; exit 2 ;;
 esac

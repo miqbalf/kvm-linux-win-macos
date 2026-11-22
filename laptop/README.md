@@ -77,7 +77,9 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 
 ## Rules
 - Never bind the GTX to vfio-pci at boot, never blacklist nvidia, never hand-edit `limine.conf`.
-- Never write to the Hackintosh disk directly: VMs use the overlay on `/dev/hackintosh-disk`.
+- Linux never mounts or writes the Hackintosh disk. Only macOS writes it: natively, or in `macos-igpu` through
+  NVMe passthrough (since 2026-11-22; `gpu-mode` checks nothing on it is mounted, open or swap). The `macos` VNC
+  VM and `gpu-mode mac --overlay` still use the copy-on-write overlay.
 - Start passthrough VMs only through `gpu-mode` / `win-gpu`, never `virsh start` directly.
 - No VM autostart. Never commit serials, VBIOS/GOP binaries, images or passwords.
 - Before risky changes: `sudo snapper -c root create -d "before <change>"` (bootable from the Limine menu).

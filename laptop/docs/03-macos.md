@@ -170,3 +170,24 @@ the shell also had a fixed `--virtual-monitor`, so RDP got a second, empty monit
 
 Limits: a bare GNOME Shell, no full gnome-session (settings daemons not running); software rendering, so
 video and 3D are slow. Mesa still probes the GTX render node at start (log: `pci id ... 10de:1f99`).
+
+## Disk: NVMe passthrough instead of the overlay (2026-11-22)
+The VM felt slow mainly because of its disk path: emulated SATA (AHCI) on a qcow2 overlay on the raw
+Samsung 980, all in QEMU software. `macos-igpu` now gets the whole Samsung 980 NVMe controller (`07:00.0`, own
+IOMMU group 16): macOS uses its own NVMe driver at native speed and writes the real disk, exactly as the native
+boot does. No overlay, so the stale-overlay trap after a native boot is gone for this VM.
+
+Linux never touches that disk:
+- `gpu-mode mac` refuses to start if any Samsung partition is mounted, open (`fuser`) or used as swap, or if
+  the Samsung is not at `07:00.0`. libvirt then unbinds the Linux `nvme` driver; `/dev/hackintosh-disk` is gone
+  from Linux until macOS stops and the controller is returned.
+- udev hides the Samsung partitions from udisks/GNOME (`UDISKS_IGNORE`, no automount, not in Files).
+- Linux has no APFS write driver anyway.
+
+Hibernation must be off in macOS (`sudo pmset -a hibernatemode 0 standby 0 autopoweroff 0`). The VM and the native
+boot have separate NVRAM: if native macOS hibernated and the VM then boots the same disk fresh, the next native
+boot would resume an old memory image onto a changed disk.
+
+Fallback: `sudo gpu-mode mac-bg --overlay` (old SATA-on-overlay path, the real disk only read). The `macos` VNC
+VM (VM Switch "macOS in a window") always uses the overlay; after an NVMe-mode boot run `sudo gpu-mode new-overlay`
+before starting it.

@@ -40,6 +40,8 @@ KEEP = {
     'AMFIPass.kext', 'IOSkywalkFamily.kext', 'IO80211FamilyLegacy.kext',
     'IO80211FamilyLegacy.kext/Contents/PlugIns/AirPortBrcmNIC.kext', 'BlueToolFixup.kext',
 }
+if IGPU:
+    KEEP.add('NVMeFix.kext')   # the real Samsung 980 is passed through (as native: power management, APST)
 # Wi-Fi in macos-igpu (BCM4360 passed through by `gpu-mode mac --radios`): Apple's own driver
 # (IO80211FamilyLegacy + AirPortBrcmNIC, kept above) handles the genuine Apple card 106b:0117.
 # No AirportBrcmFixup: it disables WoWL, leaving wlc->wowl NULL, and AirPort_BrcmNIC::SetCryptoKey ->

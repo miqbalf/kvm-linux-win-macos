@@ -3,3 +3,6 @@
 # of the macOS VM overlay. /dev/nvmeXn1 numbering swaps between boots on this laptop (2026-11-19:
 # after a reboot nvme1n1 became the CachyOS disk), so never reference /dev/nvme*n1 in VM configs.
 KERNEL=="nvme*n1", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_MODEL}=="Samsung SSD 980 1TB", SYMLINK+="hackintosh-disk"
+# Linux never mounts the Hackintosh disk (only macOS writes it: natively, and in the VM through NVMe passthrough).
+# Hide its partitions from udisks/GNOME: no automount, not shown in Files.
+KERNEL=="nvme*n1p*", SUBSYSTEM=="block", ENV{ID_MODEL}=="Samsung SSD 980 1TB", ENV{UDISKS_IGNORE}="1"
