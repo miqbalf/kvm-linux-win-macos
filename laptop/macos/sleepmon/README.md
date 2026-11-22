@@ -15,4 +15,4 @@ On this laptop VirtualSMC reports shutdown cause 5 ("software initiated") even a
 power-off, so sleepmon does not use the cause: a boot whose last recorded event is a sleep counts as a failed wake.
 
 Found with it on 2026-11-22: a DarkWake loop on 2026-11-18 22:08-22:14, a wake every 10-20 s
- (Intel USB device controller and CNVi wireless wake sources), with .
+`due to XDCI CNVW/` (Intel USB device controller and CNVi wireless wake sources), with `hibernatemode 25`.
