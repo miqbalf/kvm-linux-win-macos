@@ -29,10 +29,8 @@
     <topology sockets='1' dies='1' cores='2' threads='2'/>
     <cache mode='passthrough'/>
     <feature policy='require' name='invtsc'/>
-    <!-- No hypervisor CPUID bit (2026-11-22): with it macOS sets kern.hv_vmm_present=1 and bluetoothd swaps the
-         passed-through Apple Bluetooth for a virtual stub (Chip APPLE_VIRTUAL, PoweredOff), so Universal
-         Control cannot work. macOS uses no KVM paravirt features, nothing else depends on the bit. -->
-    <feature policy='disable' name='hypervisor'/>
+    <!-- Keep the hypervisor CPUID bit. Hiding it (2026-11-22, to stop bluetoothd using a virtual stub for the
+         passed-through Apple Bluetooth) hangs the boot: only vCPU0 runs, XNU never starts the other CPUs. -->
   </cpu>
   <clock offset='utc'><timer name='rtc' tickpolicy='catchup'/><timer name='pit' tickpolicy='delay'/><timer name='hpet' present='yes'/></clock>
   <on_poweroff>destroy</on_poweroff><on_reboot>restart</on_reboot><on_crash>destroy</on_crash>
