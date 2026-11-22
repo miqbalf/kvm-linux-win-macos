@@ -1,0 +1,58 @@
+#!/bin/bash
+# cachyos-vm: boot the laptop's real CachyOS disk (WD SN530) in VMware Fusion from the Hackintosh.
+#
+# macOS renumbers disks between boots (disk0/disk1 swap), so a raw-disk VM that stores "/dev/disk1" can one day
+# point at the macOS disk. This launcher finds the SN530 by model, checks it is the Linux disk, makes sure
+# macOS has nothing on it mounted, rebuilds the raw-disk descriptor for this boot, then starts the VM.
+#
+#   cachyos-vm            start (asks for your password: raw disk access)
+#   cachyos-vm stop       clean shutdown of the guest
+#   cachyos-vm status
+#
+# Never start it while CachyOS is hibernated, and never boot CachyOS natively while this VM runs (same disk).
+set -euo pipefail
+MODEL="WDC PC SN530"
+VMDIR="$HOME/Virtual Machines.localized/CachyOS-physical.vmwarevm"
+VMX="$VMDIR/CachyOS-physical.vmx"
+LIB="/Applications/VMware Fusion.app/Contents/Library"
+die() { echo "cachyos-vm: $*" >&2; exit 1; }
+
+find_disk() {
+    local d
+    for d in $(diskutil list physical | awk '/^\/dev\/disk/ {print $1}'); do
+        if diskutil info "$d" | grep -q "Media Name:.*$MODEL"; then echo "$d"; return; fi
+    done
+    die "no disk with model '$MODEL' found"
+}
+
+check_disk() {
+    local d=$1 layout
+    layout=$(diskutil list "$d")
+    echo "$layout" | grep -q "Linux Filesystem" || die "$d has no Linux partition, refusing"
+    echo "$layout" | grep -qE "Apple_APFS|Apple_HFS" && die "$d has a macOS partition, refusing"
+    [ "$(diskutil info / | awk -F': *' '/Part of Whole/ {print $2}')" != "${d#/dev/}" ] || die "$d is the macOS boot disk"
+    # Nothing of this disk may be mounted in macOS (the ESP gets mounted by hand sometimes).
+    local p
+    for p in $(diskutil list "$d" | awk '/^ *[0-9]+:/ {print $NF}'); do
+        if [ -n "$(diskutil info "$p" | awk -F': *' '/Mount Point/ {print $2}')" ]; then
+            echo "unmounting $p"; diskutil unmount "$p" >/dev/null || die "cannot unmount $p"
+        fi
+    done
+}
+
+case "${1:-start}" in
+start)
+    [ -f "$VMX" ] || die "no VM at $VMX (run setup.sh first)"
+    "$LIB/vmrun" list | grep -qF "$VMX" && { echo "already running"; exit 0; }
+    DISK=$(find_disk); check_disk "$DISK"
+    echo "CachyOS disk this boot: $DISK ($(diskutil info "$DISK" | awk -F': *' '/Disk Size/ {print $2}' | cut -d'(' -f1))"
+    rm -f "$VMDIR/cachyos-raw.vmdk" "$VMDIR"/cachyos-raw-pt.vmdk
+    sudo "$LIB/vmware-rawdiskCreator" create "$DISK" fullDevice "$VMDIR/cachyos-raw" ide
+    sudo chown "$(id -un)" "$VMDIR"/cachyos-raw*.vmdk
+    # Fusion asks for an admin password itself when it opens the raw disk (vmware-rawdiskAuthTool).
+    "$LIB/vmrun" -T fusion start "$VMX" gui
+    ;;
+stop)   "$LIB/vmrun" -T fusion stop "$VMX" soft ;;
+status) "$LIB/vmrun" list; DISK=$(find_disk); echo "SN530 = $DISK"; ls -l "$DISK" ;;
+*) echo "usage: cachyos-vm [start|stop|status]"; exit 2 ;;
+esac
