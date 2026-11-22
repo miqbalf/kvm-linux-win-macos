@@ -133,3 +133,22 @@ is on the shared disk).
   cards in its Network section, with a "Connect as backup" button.
 - Run the switch as `mac-bg` over SSH (own systemd unit, survives an SSH drop).
 - Back to Linux: Apple menu > Shut Down in macOS (or `osascript -e 'tell app "System Events" to shut down'`).
+
+Result (2026-11-22, stopped here; use the native boot for Continuity):
+- Wi-Fi works in the VM with Apple's own driver (no AirportBrcmFixup) plus a VM-only OpenCore patch:
+  AirPort_BrcmNIC attaches WoWL only when the card reports PCI PME, which QEMU vfio hides, so `wlc->wowl`
+  stayed NULL and WPA key install panicked (`wlc_ol_armtx` -> `wlc_wowl_get_replay_counter`). The patch NOPs
+  the capability check in `wlc_attach`. 802.11ac, AirDrop "Supported".
+- Bluetooth passes through but macOS reports `Chip APPLE_VIRTUAL, FrmV v0, PoweredOff` (it sees the
+  hypervisor). Untested idea: `<feature policy='disable' name='hypervisor'/>` in the CPU section.
+- With both radios the guest became sluggish (SSH banner timeouts, jumpy pointer); not isolated further.
+- Decision: radios stay opt-in (`--radios`, `--wifi`), default off. Full Mac features = native boot.
+
+## Touchpad in the VM
+`touchpad-bridge` turns the ELAN050A touchpad into a relative mouse with tap-to-click and two-finger scroll.
+No multitouch gestures: macOS only gets a mouse. The ELAN has two nodes ("... Mouse", idle, and
+"... Touchpad") whose order changes between boots; the bridge now picks the "Touchpad" node by name (the
+by-path link pointed at the idle node after a reboot and the pointer was dead, 2026-11-22).
+Real gestures would need the I2C controllers 00:15.0 + 00:15.1 (IOMMU group 7) passed through, VoodooI2C
+in the VM and a VM SSDT describing the touchpad (polling mode, its GPIO interrupt cannot be passed). Not done.
+

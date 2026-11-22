@@ -125,3 +125,11 @@ Full write-up: [11-native-macos.md](11-native-macos.md).
   before, on top of a Samsung disk that native macOS had rewritten. A new overlay booted at once.
   `gpu-mode mac` now fingerprints the APFS container and recreates a stale overlay itself
   (`sudo gpu-mode new-overlay` by hand). Check the overlay first whenever the VM hangs early after a native boot.
+- **Passing the Apple Wi-Fi/Bluetooth to the VM works only halfway** (2026-11-22). Wi-Fi needed a driver patch
+  (vfio hides PCI PME, the Broadcom driver then dereferences a NULL WoWL object at WPA key install); Bluetooth
+  is treated as virtual; the guest got sluggish. Universal Control, AirDrop and gestures belong to the native
+  boot. Debug a macOS VM boot hang with `update-igpu-config.sh --serial` and the serial log: the panic
+  backtrace plus `nm`/`otool` on the kext from the OpenCore image found this in a few minutes.
+- **Never point at an input device through `/dev/input/by-path/...-event-mouse`** on this laptop: the touchpad's
+  Mouse and Touchpad nodes swap order between boots. Match by name and capability.
+
