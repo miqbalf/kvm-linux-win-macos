@@ -1,0 +1,25 @@
+#!/bin/bash
+# cachyos-vm-idle: pause the CachyOS VM after IDLE_MIN minutes with no Linux app windows open.
+# Pause (not suspend): no CPU use, RAM kept, VMware keeps the disk, so nothing is remounted in macOS
+# and unpausing needs no password. linux-app unpauses it.
+# Run every minute by ~/Library/LaunchAgents/local.cachyos-vm-idle.plist. Log: /tmp/cachyos-vm-idle.log
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+IDLE_MIN=${IDLE_MIN:-15}
+VMX="$HOME/Virtual Machines.localized/CachyOS-physical.vmwarevm/CachyOS-physical.vmx"
+VMRUN="/Applications/VMware Fusion.app/Contents/Library/vmrun"
+STAMP="$HOME/Library/Caches/cachyos-vm.active"
+"$VMRUN" list | grep -qF "$VMX" || exit 0
+[ -f "$STAMP" ] || touch "$STAMP"
+active() {
+    local n
+    n=$(ssh -o BatchMode=yes -o ConnectTimeout=4 cachyos-vm bash -s <<<'xpra info :100 2>/dev/null | grep -cE "^windows\.[0-9]+\.title="') \
+        || return 0                                        # guest not reachable (booting): count as active
+    [ "${n:-0}" -gt 0 ]
+}
+if active; then touch "$STAMP"; exit 0; fi
+age=$(( ($(date +%s) - $(stat -f %m "$STAMP")) / 60 ))
+if [ "$age" -ge "$IDLE_MIN" ]; then
+    echo "$(date '+%F %T') no Linux windows for $age min: pausing"
+    pkill -f "Xpra.*attach.*cachyos-vm"
+    "$VMRUN" -T fusion pause "$VMX" && rm -f "$STAMP"
+fi

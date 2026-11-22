@@ -1,0 +1,9 @@
+[Unit]
+Description=Block idle sleep while CachyOS runs as a VMware guest (no effect on native boots)
+ConditionVirtualization=vmware
+
+[Service]
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --who=cachyos-vm --why="VMware guest on the Hackintosh" --mode=block sleep infinity
+
+[Install]
+WantedBy=multi-user.target

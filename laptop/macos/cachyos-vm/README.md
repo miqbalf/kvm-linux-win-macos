@@ -32,3 +32,22 @@ Guest prep (in CachyOS, once): `open-vm-tools` enabled, `nofail` on every non-ro
   `sudo .../ARDAgent.app/Contents/Resources/kickstart -configure -access -on -users <user> -privs -all -restart -agent`.
 - Guest IP: `cachyos-vm ip` (VMware NAT, 172.16.x.x). From another machine: `ssh -J <user>@<laptop> <user>@<guest-ip>`.
 - In the VM, `libvirtd` and `linuwu_sense` fail (no KVM-capable nested setup, no Acer EC): harmless.
+
+## Seamless Linux apps ("coherence", 2026-11-22)
+Fusion's Unity mode supports only Windows guests, so Linux apps are shown with xpra (guest: `pacman -S xpra`,
+Mac: Xpra.app from xpra.org). Install on the Hackintosh desktop: `bash install-coherence.sh`.
+- `linux-app <cmd>`: unpauses/starts the VM, opens the app as a Mac window. `linux-app attach`, `linux-app stop`.
+- `linux-apps-sync`: one Mac app per guest `.desktop` entry in `~/Applications/CachyOS Apps` (icons included).
+- `cachyos-vm-idle` (LaunchAgent): pauses the VM after 15 min with no xpra windows. Pause, not suspend: VMware
+  keeps the raw disk, so nothing gets remounted in macOS and unpausing needs no password.
+- `cachyos-vm-guard` (LaunchAgent): clean guest shutdown when macOS shuts down/restarts/logs out, so a native
+  CachyOS boot is always safe; warns at login if a suspended state exists.
+- `guest-fix-boot.sh` (run once in CachyOS): `/boot` automount with 60 s idle unmount, Spotlight/fseventsd
+  blocked on the ESP, `cachyos-vm-noidle.service` (idle-sleep inhibitor only under VMware).
+- ssh alias `cachyos-vm` uses a passphrase-less key `~/.ssh/cachyos_vm` (guest reachable only via VMware NAT).
+
+Incident 2026-11-22: after a suspend, VMware's MountHelper mounted the guest's `/boot` (FAT) in macOS while the
+suspended guest still had it mounted. macOS's FAT driver looped (`cluster 13084 is free where it should be in
+use`, 2.4 million log lines in 13 min) and froze the Mac; `fsck_msdos -y` repaired it (only macOS Spotlight files
+were damaged). Hence: no suspend, `release_disk` after stop, `/boot` automount in the guest.
+VM size 4 vCPU / 8 GB (6 vCPU / 16 GB made suspend take 70 s and loaded the host).

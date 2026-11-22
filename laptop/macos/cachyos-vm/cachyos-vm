@@ -40,28 +40,52 @@ check_disk() {
     done
 }
 
+# VMware's MountHelper mounts the disk's volumes in macOS when the VM lets go of the disk (suspend/stop).
+# The Linux ESP (/boot, FAT) must never stay mounted in macOS: macOS writes Spotlight files to it, and while
+# the VM is suspended the FAT is half-written (2026-11-22: macOS FAT driver looped and froze the Mac).
+release_disk() {
+    local d i p; d=$(find_disk) || return 0
+    for i in $(seq 1 15); do
+        for p in $(diskutil list "$d" | awk '/^ *[0-9]+:/ {print $NF}'); do
+            [ -n "$(diskutil info "$p" | awk -F': *' '/Mount Point/ {print $2}')" ] && diskutil unmount force "$p" >/dev/null 2>&1
+        done
+        sleep 1
+    done
+}
+
+as_root() {
+    if [ -t 0 ]; then sudo sh -c "$1"
+    else osascript -e "do shell script \"$(printf '%s' "$1" | sed 's/["\\]/\\&/g')\" with administrator privileges" >/dev/null
+    fi
+}
+
 case "${1:-start}" in
 start)
     [ -f "$VMX" ] || die "no VM at $VMX (run setup.sh first)"
     "$LIB/vmrun" list | grep -qF "$VMX" && { echo "already running"; exit 0; }
     DISK=$(find_disk); check_disk "$DISK"
     echo "CachyOS disk this boot: $DISK ($(diskutil info "$DISK" | awk -F': *' '/Disk Size/ {print $2}' | cut -d'(' -f1))"
-    rm -f "$VMDIR/cachyos-raw.vmdk" "$VMDIR"/cachyos-raw-pt.vmdk
-    sudo "$LIB/vmware-rawdiskCreator" create "$DISK" fullDevice "$VMDIR/cachyos-raw" ide
-    sudo chown "$(id -un)" "$VMDIR"/cachyos-raw*.vmdk
-    # vmware-vmx runs as you and needs read/write on the raw disk. Only this disk, and only until the next
-    # reboot (macOS recreates /dev nodes at boot).
-    sudo chown "$(id -un)" "$DISK"
-    if [ "$(stat -f %Su /dev/console)" = "$(id -un)" ] && [ -z "${SSH_CONNECTION:-}" ]; then
-        "$LIB/vmrun" -T fusion start "$VMX" gui
+    VMDK="$VMDIR/cachyos-raw.vmdk"
+    if grep -q '^RW .*FLAT "/dev/disk[0-9]*"' "$VMDK" 2>/dev/null; then
+        # descriptor exists: only point it at this boot's disk number (no sudo needed)
+        sed -i '' -E "s#FLAT \"/dev/disk[0-9]+\"#FLAT \"$DISK\"#" "$VMDK"
     else
-        # No desktop session (for example over SSH): run headless, use it over SSH.
-        "$LIB/vmrun" -T fusion start "$VMX" nogui
-        echo "Started headless. Guest IP (needs open-vm-tools in the guest): cachyos-vm ip"
+        as_root "\"$LIB/vmware-rawdiskCreator\" create $DISK fullDevice \"$VMDIR/cachyos-raw\" ide && chown $(id -un) \"$VMDK\""
     fi
+    # vmware-vmx runs as you and needs the raw disk. Only this disk, and only until the next reboot.
+    [ -O "$DISK" ] || as_root "chown $(id -un) $DISK"
+    # VMware asks for the admin password for the raw disk; that dialog only works with the Fusion window
+    # (a headless start fails with AuthorizationCreate -60008). Hide the window with Cmd+H afterwards.
+    "$LIB/vmrun" -T fusion start "$VMX" gui
+    echo "CachyOS started. Hide the Fusion window (Cmd+H); open apps with linux-app <app> or the CachyOS Apps folder."
     ;;
-stop)   "$LIB/vmrun" -T fusion stop "$VMX" soft ;;
+stop)   "$LIB/vmrun" -T fusion stop "$VMX" soft; release_disk ;;      # clean guest shutdown
+suspend) "$LIB/vmrun" -T fusion suspend "$VMX" soft; release_disk
+        echo "Suspended. Do NOT boot CachyOS natively until you resume it (cachyos-vm) and stop it (cachyos-vm stop)." ;;
+show)   open -a "VMware Fusion" "$VMX" ;;
+pause)  "$LIB/vmrun" -T fusion pause "$VMX" ;;       # no CPU, RAM kept, disk stays with VMware: safe
+unpause) "$LIB/vmrun" -T fusion unpause "$VMX" ;;               # full desktop window (Fusion attaches to the running VM)
 ip)     "$LIB/vmrun" -T fusion getGuestIPAddress "$VMX" -wait ;;
-status) "$LIB/vmrun" list; DISK=$(find_disk); echo "SN530 = $DISK"; ls -l "$DISK" ;;
-*) echo "usage: cachyos-vm [start|stop|status|ip]"; exit 2 ;;
+status) "$LIB/vmrun" list; ls "$VMDIR"/*.vmss >/dev/null 2>&1 && echo "VM is SUSPENDED (state saved): do not boot CachyOS natively"; DISK=$(find_disk); echo "SN530 = $DISK"; ls -l "$DISK" ;;
+*) echo "usage: cachyos-vm [start|stop|pause|unpause|suspend|show|status|ip]"; exit 2 ;;
 esac

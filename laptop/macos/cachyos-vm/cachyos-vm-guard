@@ -1,0 +1,26 @@
+#!/bin/bash
+# cachyos-vm-guard: shut the CachyOS VM down cleanly when macOS shuts down, restarts or logs out,
+# so the shared SN530 disk is never left in use (safe to boot CachyOS natively afterwards).
+# Started at login by ~/Library/LaunchAgents/local.cachyos-vm-guard.plist; launchd sends SIGTERM at logout.
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+VMX="$HOME/Virtual Machines.localized/CachyOS-physical.vmwarevm/CachyOS-physical.vmx"
+VMRUN="/Applications/VMware Fusion.app/Contents/Library/vmrun"
+LOG=/tmp/cachyos-vm-guard.log
+
+stop_vm() {
+    if "$VMRUN" list | grep -qF "$VMX"; then
+        echo "$(date '+%F %T') macOS is shutting down: stopping CachyOS" >> "$LOG"
+        "$VMRUN" -T fusion unpause "$VMX" >/dev/null 2>&1
+        # soft = guest shutdown through open-vm-tools; hard power-off only if that fails
+        "$VMRUN" -T fusion stop "$VMX" soft >> "$LOG" 2>&1 || "$VMRUN" -T fusion stop "$VMX" hard >> "$LOG" 2>&1
+        echo "$(date '+%F %T') CachyOS stopped" >> "$LOG"
+    fi
+    exit 0
+}
+trap stop_vm TERM INT HUP
+
+# at login: warn if a suspended state was left behind (never boot CachyOS natively then)
+if ls "$(dirname "$VMX")"/*.vmss >/dev/null 2>&1; then
+    osascript -e 'display notification "CachyOS VM has a suspended state. Run cachyos-vm, then cachyos-vm stop, before booting CachyOS natively." with title "CachyOS"'
+fi
+while :; do sleep 86400 & wait $!; done

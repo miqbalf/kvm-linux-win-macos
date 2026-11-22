@@ -1,0 +1,91 @@
+#!/bin/bash
+# linux-apps-sync: make a macOS app for every desktop app installed in the CachyOS VM.
+# Result: ~/Applications/CachyOS Apps/<Name>.app (Spotlight, Launchpad, Dock). Clicking one runs
+# `linux-app <command>`, which resumes/starts the VM headless and opens the app as a Mac window.
+# Run again after installing apps in CachyOS. The VM must be running.
+set -euo pipefail
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+OUT="$HOME/Applications/CachyOS Apps"
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+linux-app attach >/dev/null 2>&1 || true      # makes sure the VM runs and ssh works
+
+# In the guest: list visible apps as id<TAB>name<TAB>command<TAB>icon-file, and copy the icons as PNG.
+ssh -o BatchMode=yes cachyos-vm bash -s > "$TMP/apps.tsv" <<'G'
+python3 - <<'P'
+import configparser, glob, os, re, shutil, subprocess
+dirs = [os.path.expanduser('~/.local/share/applications'), '/usr/share/applications',
+        '/var/lib/flatpak/exports/share/applications', os.path.expanduser('~/.local/share/flatpak/exports/share/applications')]
+seen, out = set(), '/tmp/linux-apps-icons'
+shutil.rmtree(out, ignore_errors=True); os.makedirs(out)
+def icon_file(name):
+    if not name: return ''
+    if os.path.isabs(name) and os.path.exists(name): return name
+    for size in ('512x512', '256x256', '128x128', 'scalable', '96x96', '64x64', '48x48'):
+        for base in ('/usr/share/icons/hicolor', '/usr/share/icons/Adwaita', os.path.expanduser('~/.local/share/icons/hicolor'),
+                     '/var/lib/flatpak/exports/share/icons/hicolor'):
+            for ext in ('png', 'svg'):
+                f = f'{base}/{size}/apps/{name}.{ext}'
+                if os.path.exists(f): return f
+    for ext in ('png', 'svg', 'xpm'):
+        f = f'/usr/share/pixmaps/{name}.{ext}'
+        if os.path.exists(f): return f
+    return ''
+for d in dirs:
+    for f in sorted(glob.glob(d + '/*.desktop')):
+        app_id = os.path.basename(f)[:-8]
+        if app_id in seen: continue
+        seen.add(app_id)
+        c = configparser.RawConfigParser(strict=False, interpolation=None)
+        try: c.read(f, encoding='utf-8')
+        except Exception: continue
+        if not c.has_section('Desktop Entry'): continue
+        e = c['Desktop Entry']
+        if e.get('Type') != 'Application' or e.get('NoDisplay', 'false').lower() == 'true' \
+           or e.get('Hidden', 'false').lower() == 'true' or e.get('Terminal', 'false').lower() == 'true': continue
+        if 'OnlyShowIn' in e: continue
+        cmd = re.sub(r'\s*%[fFuUdDnNickvm]', '', e.get('Exec', '')).strip()
+        name = e.get('Name', app_id).replace('/', '-')
+        if not cmd: continue
+        src, png = icon_file(e.get('Icon', '')), ''
+        if src:
+            png = f'{out}/{app_id}.png'
+            if src.endswith('.svg'):
+                if subprocess.run(['rsvg-convert', '-w', '512', '-h', '512', '-o', png, src]).returncode: png = ''
+            elif src.endswith('.png'): shutil.copy(src, png)
+            else: png = ''
+        print(f'{app_id}\t{name}\t{cmd}\t{png}')
+P
+G
+mkdir -p "$TMP/icons"
+scp -q -o BatchMode=yes 'cachyos-vm:/tmp/linux-apps-icons/*' "$TMP/icons/" 2>/dev/null || true
+
+rm -rf "$OUT"; mkdir -p "$OUT"
+n=0
+while IFS=$'\t' read -r id name cmd png; do
+    app="$OUT/$name.app"; mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+    cat > "$app/Contents/MacOS/run" <<R
+#!/bin/bash
+exec /usr/local/bin/linux-app $cmd
+R
+    chmod +x "$app/Contents/MacOS/run"
+    icon=""
+    if [ -n "$png" ] && [ -f "$TMP/icons/$id.png" ]; then
+        sips -s format icns "$TMP/icons/$id.png" --out "$app/Contents/Resources/icon.icns" >/dev/null 2>&1 && icon=icon
+    fi
+    safe_id=$(printf '%s' "$id" | tr -c 'A-Za-z0-9.-' '-')
+    cat > "$app/Contents/Info.plist" <<P
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>run</string>
+  <key>CFBundleIdentifier</key><string>local.cachyos.$safe_id</string>
+  <key>CFBundleName</key><string>$(printf '%s' "$name" | sed 's/&/\&amp;/g; s/</\&lt;/g')</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>$icon</string>
+  <key>LSUIElement</key><true/>
+</dict></plist>
+P
+    n=$((n+1))
+done < "$TMP/apps.tsv"
+touch "$OUT"
+echo "$n apps in $OUT"

@@ -1,0 +1,57 @@
+#!/bin/bash
+# linux-app: run apps from the CachyOS VMware guest as normal macOS windows (xpra, seamless).
+#
+#   linux-app <command> [args]   start an app (resumes/starts the VM first), e.g. linux-app nautilus
+#   linux-app attach             re-open the windows of apps still running in the VM
+#   linux-app stop               stop the xpra session in the VM (closes all its apps)
+#
+# Needs: cachyos-vm, xpra in the guest, /Applications/Xpra.app, ssh alias "cachyos-vm" (key ~/.ssh/cachyos_vm).
+set -uo pipefail
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+VMX="$HOME/Virtual Machines.localized/CachyOS-physical.vmwarevm/CachyOS-physical.vmx"
+VMRUN="/Applications/VMware Fusion.app/Contents/Library/vmrun"
+XPRA=/Applications/Xpra.app/Contents/MacOS/Xpra
+D=100   # xpra display number in the guest
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=accept-new cachyos-vm)
+
+note() { echo "$1"; [ -t 1 ] || osascript -e "display notification \"$1\" with title \"CachyOS\"" >/dev/null 2>&1; }
+
+ensure_vm() {
+    local fresh=0
+    # paused by cachyos-vm-idle: unpause (instant, no password)
+    "$VMRUN" -T fusion unpause "$VMX" >/dev/null 2>&1 && fresh=1
+    if ! "$VMRUN" list | grep -qF "$VMX"; then
+        note "Starting CachyOS…"
+        cachyos-vm start >/tmp/linux-app-vm.log 2>&1 || { note "CachyOS failed to start (see /tmp/linux-app-vm.log)"; exit 1; }
+        fresh=1
+    fi
+    local ip; ip=$("$VMRUN" -T fusion getGuestIPAddress "$VMX" -wait 2>/dev/null)
+    [ -n "$ip" ] && sed -i '' "/^Host cachyos-vm$/,/^Host /s/^  HostName .*/  HostName $ip/" ~/.ssh/config
+    local i; for i in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
+    # after a resume the old xpra client connection is dead: drop it so attach makes a new one
+    [ $fresh = 1 ] && pkill -f "Xpra.*attach.*cachyos-vm" 2>/dev/null
+    touch "$HOME/Library/Caches/cachyos-vm.active"
+}
+# the guest login shell is fish: send bash scripts on stdin
+gsh() { "${SSH[@]}" bash -s; }
+ensure_server() {
+    gsh <<<"xpra info :$D >/dev/null 2>&1 || xpra start :$D --daemon=yes --exit-with-children=no --opengl=no \
+        --pulseaudio=no --notifications=yes --systemd-run=no >/dev/null 2>&1"
+}
+attach() {
+    pgrep -f "Xpra.*attach.*cachyos-vm" >/dev/null && return 0
+    nohup "$XPRA" attach "ssh://cachyos-vm/$D" --ssh="ssh -o BatchMode=yes" --title='@title@ (CachyOS)' \
+        --tray=no --splash=no >/tmp/linux-app-xpra.log 2>&1 &
+}
+
+case "${1:-}" in
+"") sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+attach) ensure_vm; ensure_server; attach ;;
+stop) gsh <<<"xpra stop :$D" ;;
+*)
+    ensure_vm; ensure_server
+    # X11 inside the xpra display, not the guest's Wayland session
+    gsh <<<"cd ~; DISPLAY=:$D WAYLAND_DISPLAY= GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb setsid -f $(printf '%q ' "$@") >/dev/null 2>&1"
+    attach
+    ;;
+esac
