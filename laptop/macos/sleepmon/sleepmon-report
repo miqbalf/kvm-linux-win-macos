@@ -1,0 +1,14 @@
+#!/bin/bash
+# sleepmon-report: summary of sleep/wake cycles recorded by sleepmon.
+#   sleepmon-report        counts + failed wakes + last 20 events
+#   sleepmon-report log    full text log
+D=${SLEEPMON_DIR:-/Library/Logs/SleepMon}
+[ "${1:-}" = log ] && exec less "$D/sleepmon.log"
+[ -f "$D/events.csv" ] || { echo "no data yet ($D/events.csv)"; exit 0; }
+echo "sleeps: $(grep -c ',sleep,' "$D/events.csv")   wakes: $(grep -c ',wake,' "$D/events.csv")   boots: $(grep -cE ',(boot|FAILED_WAKE),' "$D/events.csv")   FAILED WAKES: $(grep -c ',FAILED_WAKE,' "$D/events.csv")"
+if grep -q ',FAILED_WAKE,' "$D/events.csv"; then
+    echo; echo "== failed wakes (with the sleep cycle number that failed)"
+    awk -F, '$2=="sleep"{last=$0} $2=="FAILED_WAKE"{print "  last sleep: " last; print "  then:       " $0; print ""}' "$D/events.csv" | cut -c1-220
+fi
+echo; echo "== last 20 events"; tail -20 "$D/events.csv" | cut -c1-200 | column -s, -t
+echo; echo "pmset failures recorded by macOS: $(pmset -g log | grep -ciE 'Sleep Wake failure')"
