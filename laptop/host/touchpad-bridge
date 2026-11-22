@@ -14,8 +14,18 @@ import math, sys, time
 import evdev
 from evdev import ecodes as E
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else \
-    '/dev/input/by-path/pci-0000:00:15.1-platform-i2c_designware.1-event-mouse'
+def find_touchpad():
+    # The ELAN050A has two nodes, "... Mouse" (idle in multitouch mode) and "... Touchpad" (the real one).
+    # Their order changes between boots, so the by-path link `...-event-mouse` sometimes points at the idle
+    # node and the pointer is dead (2026-11-22). Pick the node by name and multitouch capability.
+    for path in evdev.list_devices():
+        d = evdev.InputDevice(path)
+        abs_codes = [c for c, _ in d.capabilities().get(E.EV_ABS, [])]
+        if d.name.endswith('Touchpad') and E.ABS_MT_POSITION_X in abs_codes and 'gpu-mode' not in d.name:
+            return path
+    sys.exit('touchpad-bridge: no multitouch touchpad found')
+
+SRC = sys.argv[1] if len(sys.argv) > 1 else find_touchpad()
 GAIN = 0.55          # pixels per touchpad unit at slow speed (pad: 32 units/mm)
 ACCEL = 0.012        # extra gain per unit/frame of speed
 MAX_GAIN = 2.2
