@@ -6,9 +6,19 @@
        No emulated display: debug via SSH (192.168.122.11) and the serial log. -->
   <name>macos-igpu</name>
   <uuid>77c1f6e2-3b2a-4c4e-9a1f-2d8b6a5c9d04</uuid>
-  <memory unit='GiB'>12</memory>
-  <currentMemory unit='GiB'>12</currentMemory>
-  <vcpu placement='static'>6</vcpu>
+  <memory unit='GiB'>16</memory>
+  <currentMemory unit='GiB'>16</currentMemory>
+    <!-- Half the laptop (i5-10300H 4C/8T, 32 GB): vCPUs pinned to host cores 2-3 (CPUs 2,6,3,7; CPU n and n+4
+       are siblings), QEMU emulator threads on cores 0-1, 16 GiB RAM. -->
+  <vcpu placement='static'>4</vcpu>
+  <cputune>
+    <shares>10000</shares>
+    <vcpupin vcpu='0' cpuset='2'/>
+    <vcpupin vcpu='1' cpuset='6'/>
+    <vcpupin vcpu='2' cpuset='3'/>
+    <vcpupin vcpu='3' cpuset='7'/>
+    <emulatorpin cpuset='0-1,4-5'/>
+  </cputune>
   <os firmware='efi'>
     <type arch='x86_64' machine='pc'>hvm</type>
     <loader readonly='yes' type='pflash'>/usr/share/edk2/x64/OVMF_CODE.4m.fd</loader>
@@ -16,7 +26,7 @@
   </os>
   <features><acpi/><apic/><vmport state='off'/><ioapic driver='kvm'/></features>
   <cpu mode='host-passthrough' check='none' migratable='off'>
-    <topology sockets='1' dies='1' cores='3' threads='2'/>
+    <topology sockets='1' dies='1' cores='2' threads='2'/>
     <cache mode='passthrough'/>
     <feature policy='require' name='invtsc'/>
   </cpu>

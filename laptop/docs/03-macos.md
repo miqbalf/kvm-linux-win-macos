@@ -87,10 +87,13 @@ To measure in the guest after a boot (same as native):
 ```
 or `hackmon report` (installed on the same macOS, so it also runs in the VM).
 
+- Half the laptop for macOS (both domains, 2026-11-22): 4 vCPUs (`cores='2' threads='2'`) pinned to host
+  cores 2-3 (CPUs 2,6,3,7; CPU n and n+4 are siblings), QEMU emulator threads on cores 0-1, 16 GiB RAM
+  (was 6 unpinned vCPUs, 12 GiB). Defined domains backed up in `~/vm-xml-backup/` before `virsh define`.
+
 Next candidates, to test one at a time and measure (not done yet):
-1. CPU pinning: the i5-10300H has 4 cores / 8 threads (CPU n and n+4 are siblings). Pin the 6 vCPUs to host
-   CPUs 1-3 and 5-7, the emulator and I/O threads to 0 and 4, keep `cores='3' threads='2'`.
-2. An `iothread` for the overlay disk.
+1. (`iothread` is not possible: the disks are SATA, QEMU iothreads need virtio-blk/scsi.)
+2. Compare boot and UI speed against the old 6 vCPU layout if 4 pinned vCPUs feel slower.
 3. Memory: 12 GB without hugepages now; try transparent hugepages (`always`/`madvise`) before static hugepages
    (static ones take RAM away from Linux and Windows).
 4. Disk path: SATA (AHCI) on `machine='pc'`. q35 + a faster controller is possible but changes the PCI layout the
