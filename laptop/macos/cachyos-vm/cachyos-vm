@@ -49,10 +49,19 @@ start)
     rm -f "$VMDIR/cachyos-raw.vmdk" "$VMDIR"/cachyos-raw-pt.vmdk
     sudo "$LIB/vmware-rawdiskCreator" create "$DISK" fullDevice "$VMDIR/cachyos-raw" ide
     sudo chown "$(id -un)" "$VMDIR"/cachyos-raw*.vmdk
-    # Fusion asks for an admin password itself when it opens the raw disk (vmware-rawdiskAuthTool).
-    "$LIB/vmrun" -T fusion start "$VMX" gui
+    # vmware-vmx runs as you and needs read/write on the raw disk. Only this disk, and only until the next
+    # reboot (macOS recreates /dev nodes at boot).
+    sudo chown "$(id -un)" "$DISK"
+    if [ "$(stat -f %Su /dev/console)" = "$(id -un)" ] && [ -z "${SSH_CONNECTION:-}" ]; then
+        "$LIB/vmrun" -T fusion start "$VMX" gui
+    else
+        # No desktop session (for example over SSH): run headless, use it over SSH.
+        "$LIB/vmrun" -T fusion start "$VMX" nogui
+        echo "Started headless. Guest IP (needs open-vm-tools in the guest): cachyos-vm ip"
+    fi
     ;;
 stop)   "$LIB/vmrun" -T fusion stop "$VMX" soft ;;
+ip)     "$LIB/vmrun" -T fusion getGuestIPAddress "$VMX" -wait ;;
 status) "$LIB/vmrun" list; DISK=$(find_disk); echo "SN530 = $DISK"; ls -l "$DISK" ;;
-*) echo "usage: cachyos-vm [start|stop|status]"; exit 2 ;;
+*) echo "usage: cachyos-vm [start|stop|status|ip]"; exit 2 ;;
 esac
