@@ -116,3 +116,17 @@ Next candidates, to test one at a time and measure (not done yet):
 5. The overlay `nvme1-overlay.qcow2` grows with every guest write; a large, fragmented overlay on btrfs slows I/O
    (consider `chattr +C` on the images directory for new files, or periodically recreating the overlay).
 6. Inside the guest: Bitdefender's 30 s ES wait and Spotlight/Google Drive indexing apply to the VM too.
+
+## Wi-Fi and Bluetooth in the VM (Continuity, Universal Control) (2026-11-22)
+Universal Control needs Apple Bluetooth LE plus Wi-Fi (AWDL) in the Mac itself; the VM's virtual NIC behind NAT
+has neither, so it never worked in KVM. `gpu-mode mac` now passes the laptop's Apple BCM4360 Wi-Fi (PCI `09:00.0`,
+`14e4:43a0`, own IOMMU group 18) and Apple Bluetooth (USB `05ac:828f`) to `macos-igpu`. libvirt (`managed='yes'`)
+takes them from `wl`/`btusb` at start and returns them at shutdown. The VM OpenCore config enables
+AirportBrcmFixup and its injectors and adds `brcmfx-wowl=0`, as on the native boot (the OCLP Wi-Fi root patch
+is on the shared disk).
+
+- Linux has no network while macOS runs (`wlan0` is its only link; Ethernet is unplugged). Run the switch as
+  `sudo gpu-mode mac-bg` over SSH (own systemd unit, survives the SSH drop). macOS joins the LAN over Wi-Fi
+  (same MAC as Linux, so normally the same DHCP address).
+- `sudo gpu-mode mac --keep-wifi` leaves both radios with Linux (needed for headless Linux RDP over Wi-Fi).
+- Back to Linux: Apple menu > Shut Down in macOS (or `osascript -e 'tell app "System Events" to shut down'`).

@@ -1,6 +1,7 @@
 #!/bin/bash
 # gpu-mode - switch the laptop's Intel iGPU (00:02.0) between the host and the macOS VM.
 #   sudo gpu-mode mac      stop GDM, bind iGPU to vfio-pci, start macos-igpu (macOS on the laptop panel)
+#                          with the Wi-Fi + Bluetooth (Linux loses its network); add --keep-wifi to keep them on Linux
 #   sudo gpu-mode host     stop macos-igpu, give the iGPU back to i915, start GDM
 #   sudo gpu-mode win      give the GTX 1650 to win10-gpu (Linux keeps the panel; view: looking-glass-client)
 #   sudo gpu-mode win-off  stop win10-gpu, GTX 1650 back to nvidia
@@ -14,6 +15,8 @@
 set -uo pipefail
 # Never die halfway through a switch because the caller closed stdout (e.g. `gpu-mode host | head -1`).
 trap '' PIPE
+# `sudo gpu-mode mac` over SSH: the Wi-Fi goes to macOS and the SSH session drops. Keep running.
+trap '' HUP
 IGPU=0000:00:02.0
 VM=macos-igpu
 GUEST_IP=192.168.122.11
@@ -80,6 +83,22 @@ check_overlay() {
     new_overlay
   fi
 }
+# Apple BCM4360 Wi-Fi (PCI 09:00.0, own IOMMU group) and Apple Bluetooth (USB 05ac:828f) for macOS,
+# so Continuity / Universal Control work. libvirt (managed='yes') takes them from wl/btusb at start and gives
+# them back at shutdown. Linux has no network while macOS runs (wlan0 is its only link, Ethernet unplugged).
+# `gpu-mode mac --keep-wifi` leaves both with Linux. Added to/removed from the persistent domain before start.
+RADIO_PCI="<hostdev mode='subsystem' type='pci' managed='yes'><source><address domain='0x0000' bus='0x09' slot='0x00' function='0x0'/></source><address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/></hostdev>"
+RADIO_USB="<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id='0x05ac'/><product id='0x828f'/></source></hostdev>"
+set_radios() {   # $1 = on|off
+  local x f; x=$(virsh dumpxml --inactive "$VM")
+  for f in "$RADIO_PCI" "$RADIO_USB"; do
+    local has=0
+    case "$f" in *"bus='0x09'"*) grep -q "bus='0x09' slot='0x00'" <<<"$x" && has=1 ;; *) grep -q "product id='0x828f'" <<<"$x" && has=1 ;; esac
+    if [ "$1" = on ] && [ $has = 0 ]; then echo "$f" > /run/gpu-mode-dev.xml; virsh attach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "attach radio failed"
+    elif [ "$1" = off ] && [ $has = 1 ]; then echo "$f" > /run/gpu-mode-dev.xml; virsh detach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "detach radio failed"; fi
+  done
+  rm -f /run/gpu-mode-dev.xml
+}
 TP_UNIT=gpu-mode-touchpad
 TP_DEV=/dev/input/gpu-mode-touchpad
 # Touchpad -> virtual mouse with tap-to-click for the VM (host/touchpad-bridge).
@@ -122,7 +141,7 @@ vtcon() { for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" "$v/na
 [ "${1:-}" = watchdog ] && { watchdog; exit 0; }
 # mac-bg: same as `mac`, but as its own system unit, so the switch survives the end of the desktop
 # session that started it (the VM Switch app runs inside GNOME, which `mac` stops).
-[ "${1:-}" = mac-bg ] && exec systemd-run -q --collect --unit=gpu-mode-switch /usr/local/sbin/gpu-mode mac
+[ "${1:-}" = mac-bg ] && exec systemd-run -q --collect --unit=gpu-mode-switch /usr/local/sbin/gpu-mode mac ${2:-}
 exec 9>/run/gpu-mode.lock
 flock -w 300 9 || die "another gpu-mode is still running"
 
@@ -213,6 +232,13 @@ to_mac() {
   # NVMe numbering swaps between boots: the overlay must sit on the Samsung, never on the host disk.
   [ "$(lsblk -dno MODEL /dev/hackintosh-disk 2>/dev/null)" = "Samsung SSD 980 1TB" ] || die "/dev/hackintosh-disk is not the Samsung 980"
   check_overlay
+  if [ "$RADIOS" = on ]; then
+    lspci -s 09:00.0 -n | grep -q '14e4:43a0' || die "Wi-Fi 09:00.0 is not the BCM4360"
+    set_radios on
+    log "Wi-Fi + Bluetooth go to macOS: SSH to Linux drops now; reach macOS over Wi-Fi (same LAN). Back: Apple menu > Shut Down"
+  else
+    set_radios off
+  fi
   qemu-img info -U "$OVERLAY" 2>/dev/null | grep -q 'backing file: /dev/hackintosh-disk' || die "overlay is not backed by /dev/hackintosh-disk"
 
   save_bl
@@ -276,6 +302,8 @@ to_host() {
   to_host_hw
 }
 
+RADIOS=on
+[ "${2:-}" = --keep-wifi ] && RADIOS=off
 case "${1:-status}" in
   mac) to_mac; status ;;
   host) to_host; status ;;
