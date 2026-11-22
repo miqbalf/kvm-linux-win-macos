@@ -1,0 +1,83 @@
+#!/bin/bash
+# apfs-trim-cycle: fast boots with OpenCore SetApfsTrimTimeout=0, plus one full APFS trim boot every 30 days.
+#
+# Why: with SetApfsTrimTimeout=-1 macOS trims all free space of the Samsung 980 at every boot (about 51 s,
+# shown as a stall right after dyld). With 0 the boot is fast but the SSD never gets TRIM. This script keeps
+# 0 and switches to -1 once a month, so the next boot does one full trim; after that boot it goes back to 0.
+#
+#   apfs-trim-cycle status     current value, last full trim, next due
+#   apfs-trim-cycle now        full trim on the next reboot
+#   apfs-trim-cycle boot       (LaunchDaemon, at startup) -1 found -> this boot trimmed -> back to 0
+#   apfs-trim-cycle check      (LaunchDaemon, daily) 30 days since last full trim -> set -1
+set -euo pipefail
+STAMP=/var/db/apfs-trim-cycle.last
+DAYS=${APFS_TRIM_DAYS:-30}
+KEY=":Kernel:Quirks:SetApfsTrimTimeout"
+log() { echo "$(date '+%F %T') apfs-trim-cycle: $*"; }
+
+# The EFI partition OpenCore booted from (NVRAM boot-path ... HD(n,GPT,<partition uuid>,...)).
+efi_dev() {
+    local uuid
+    uuid=$(nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:boot-path 2>/dev/null | grep -oE 'GPT,[0-9A-Fa-f-]{36}' | cut -d, -f2)
+    [ -n "$uuid" ] || { log "no OpenCore boot-path in NVRAM"; exit 1; }
+    diskutil info "$uuid" | awk -F': *' '/Device Identifier/ {print $2}'
+}
+
+MOUNTED_BY_US=0
+mount_efi() {
+    DEV=$(efi_dev)
+    MP=$(diskutil info "$DEV" | awk -F': *' '/Mount Point/ {print $2}')
+    if [ -z "$MP" ]; then
+        diskutil mount "$DEV" >/dev/null
+        MOUNTED_BY_US=1
+        MP=$(diskutil info "$DEV" | awk -F': *' '/Mount Point/ {print $2}')
+    fi
+    CONFIG="$MP/EFI/OC/config.plist"
+    [ -f "$CONFIG" ] || { log "no $CONFIG"; cleanup; exit 1; }
+}
+cleanup() { [ "$MOUNTED_BY_US" = 1 ] && diskutil unmount "$DEV" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+current() { /usr/libexec/PlistBuddy -c "Print $KEY" "$CONFIG"; }
+set_value() {
+    cp "$CONFIG" "$CONFIG.trimcycle.bak"
+    /usr/libexec/PlistBuddy -c "Set $KEY $1" "$CONFIG"
+    if ! plutil -lint -s "$CONFIG"; then
+        cp "$CONFIG.trimcycle.bak" "$CONFIG"; log "plist check failed, restored"; exit 1
+    fi
+    rm -f "$CONFIG.trimcycle.bak"
+    sync
+    log "SetApfsTrimTimeout = $1"
+}
+last() { cat "$STAMP" 2>/dev/null || echo 0; }
+
+case "${1:-status}" in
+status)
+    mount_efi
+    l=$(last)
+    echo "EFI: $DEV  SetApfsTrimTimeout: $(current)  (0 = fast boot, -1 = full trim next boot)"
+    if [ "$l" = 0 ]; then echo "Last full trim: unknown"; else
+        echo "Last full trim: $(date -r "$l" '+%F')  next due: $(date -r $((l + DAYS * 86400)) '+%F')"; fi
+    ;;
+now)
+    [ "$EUID" = 0 ] || { echo "run with sudo"; exit 1; }
+    mount_efi; set_value -1; echo "Reboot to run a full trim (boot takes about a minute longer)."
+    ;;
+boot)
+    mount_efi
+    if [ "$(current)" = "-1" ]; then
+        date +%s > "$STAMP"
+        set_value 0
+        log "full trim done this boot, back to fast boot"
+    fi
+    [ -f "$STAMP" ] || date +%s > "$STAMP"
+    ;;
+check)
+    mount_efi
+    if [ "$(current)" = "0" ] && [ $(( $(date +%s) - $(last) )) -ge $((DAYS * 86400)) ]; then
+        set_value -1
+        log "$DAYS days since last full trim: next boot trims"
+    fi
+    ;;
+*) echo "usage: apfs-trim-cycle status|now|boot|check"; exit 2 ;;
+esac

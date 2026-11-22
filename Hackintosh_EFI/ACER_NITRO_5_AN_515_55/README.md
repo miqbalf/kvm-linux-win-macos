@@ -35,6 +35,12 @@ an all-zero UUID and an all-zero ROM.
 2. Debug boot-args removed: `-v debug=0x100 keepsyms=1 swd_panic=1`.
 3. `Misc > Debug > Target` 3 to 0.
 
+Monthly full trim: `laptop/macos/apfs-trim/` (`bash install.sh`) installs a LaunchDaemon that keeps
+`SetApfsTrimTimeout = 0` but sets -1 once every 30 days, so the next boot does one full trim (about a minute
+longer); at the following startup it puts 0 back. `sudo apfs-trim-cycle now` forces a full trim on the next
+reboot, `apfs-trim-cycle status` shows the state. Keep 20 % or more of the 980 free: without TRIM a nearly
+full DRAM-less SSD slows down (2026-11-22: 91 GB free of 931 GB).
+
 Other boot delay, not EFI: Bitdefender's Endpoint Security early-boot client makes the kernel wait 30 s
 (`(EndpointSecurity) Early boot timed out. Resuming execs`). Kept on purpose.
 
