@@ -48,6 +48,18 @@ KEEP = {
 for k in d['Kernel']['Add']:
     k['Enabled'] = k['BundlePath'] in KEEP
 d['Kernel']['Quirks']['ProvideCurrentCpuInfo'] = True
+if IGPU:
+    # BCM4360 passed through (`gpu-mode mac --radios`): AirPort_BrcmNIC sets up WoWL only when the card reports
+    # PCI PME (wlc_wowl_cap -> pcicore_pmecap_fast). QEMU vfio hides PME, so wlc->wowl stays NULL and WPA key
+    # install panics (SetCryptoKey -> wlc_ol_armtx -> wlc_wowl_get_replay_counter, NULL + 0x160, 2026-11-22).
+    # Patch: in wlc_attach, NOP the `je` after `call wlc_wowl_cap; test al,al`, so WoWL is always attached.
+    # Bytes from AirPortBrcmNIC 1400.1.1 (unique match, offset 0x1222fd); a newer driver simply won't match.
+    d['Kernel']['Patch'] = [p for p in d['Kernel']['Patch'] if p.get('Comment') != 'VM: BrcmNIC WoWL without PME']
+    d['Kernel']['Patch'].append({
+        'Arch': 'x86_64', 'Base': '', 'Comment': 'VM: BrcmNIC WoWL without PME', 'Count': 1, 'Enabled': True,
+        'Find': bytes.fromhex('e81242190084c00f845b040000'), 'Identifier': 'com.apple.driver.AirPort.BrcmNIC',
+        'Limit': 0, 'Mask': b'', 'MaxKernel': '', 'MinKernel': '',
+        'Replace': bytes.fromhex('e81242190084c0660f1f440000'), 'ReplaceMask': b'', 'Skip': 0})
 # No APFS boot-time trim (2026-11-22, measured on the native boot: "spaceman_scan_free_blocks ... trims took
 # 51 s" right after the dyld shared cache, every boot). macOS 12+ accepts only 0 (off) or -1 (full trim).
 # In the VM the trims only hit the qcow2 overlay anyway. The input config may be an old backup with -1.
