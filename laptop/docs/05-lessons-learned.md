@@ -75,3 +75,47 @@ Read before changing boot, GPU or VM settings.
 - Data was fine: a full buffered read of the 200 GB image afterwards found 0 unreadable blocks.
 - Fix: `cache='writeback' io='threads'` for all VMs (repo XMLs + `host/vm-disk-writeback.sh` for defined VMs).
 
+
+## 2026-11-21/22: native macOS boot (OpenCore on the laptop itself)
+Full write-up: [11-native-macos.md](11-native-macos.md).
+- **The long stall after the dyld shared cache was APFS trimming the whole free space of the Samsung 980** on every
+  boot (`spaceman_scan_free_blocks: disk3 scan took 51.83 s, trims took 51.15 s`, 886,592 extents). Fix:
+  `Kernel > Quirks > SetApfsTrimTimeout = 0` (macOS 12+ accepts only 0 or -1; other values act like -1).
+  Boot to login 101 s to 49 s. A monthly full trim (`laptop/macos/apfs-trim`) replaces it. The one Samsung
+  `Loss of MMIO space` panic happened inside that trim window; none since.
+- Measure a boot without verbose mode: `/usr/bin/log show --last boot --predicate 'eventMessage CONTAINS
+  "spaceman_scan_free_blocks" OR eventMessage CONTAINS "hello, launchd" ...'`. In zsh, `log` is a builtin: use
+  `/usr/bin/log`.
+- **macOS disk numbers swap between boots** (`disk0` and `disk1`). `disk1s1` was once the Linux ESP, not the
+  OpenCore ESP. Always mount the ESP by partition UUID and check its contents before writing.
+- A kext in `/Library/Extensions` (approved) loaded once and then vanished after a reboot: the Auxiliary Kernel
+  Collection kept a stale path (`missing bundle ... /private/tmp/NitroEC.kext`). Injecting it from OpenCore
+  (`Kernel > Add`) avoids the AuxKC and survives reboots. `kmutil install --update-all` "Read-only file system"
+  errors on a sealed system are harmless.
+- Mapping an EC RAM mirror in a kext: `IOMemoryDescriptor::withAddressRange(addr, ..., kernel_task)` treats the
+  address as virtual and page-faults (panic CR2 = the physical address). Use `withPhysicalAddress`.
+- Kexts removed with no loss: `CPUFriend` + data provider (CPU PM stays native: `X86PlatformPlugin`,
+  `plugin-type = 1`), `XHCI-unsupported`, `CtlnaAHCIPort`, `ACPIMonitor`, `SMCLightSensor`, and the duplicate
+  `SSDT-off-gpu` (`SSDT-NoHybGfx` alone powers off the GTX: 0 NVIDIA PCI devices in ioreg).
+- **VirtualSMC reports shutdown cause 5 even after a panic or a forced power-off** on this laptop. Do not trust
+  the shutdown cause; use panic files and sleepmon's "last event was a sleep" rule.
+- Wake reason on every wake is `XDCI CNVW/` (USB device controller + CNVi wireless). A DarkWake loop every
+  10-20 s happened on 2026-11-18. Candidate fix: `_PRW`/`GPRW` instant-wake patch for those two devices.
+- `hibernatemode 25` writes all RAM (32 GB) to the SSD at every sleep.
+- Bitdefender's EndpointSecurity client adds a fixed 30 s wait at boot (`Early boot timed out. Resuming execs`).
+- **VMware Fusion raw disk:** VMware always asks for an admin password before opening a `/dev/disk*` (also for
+  a `monolithicFlat` descriptor, and also when the user owns the device node). From SSH or a headless
+  (`nogui`) start, macOS cannot create the authorization (`AuthorizationCreate() failed: -60008`); changing the
+  `com.vmware.diskhelper.open` right does not help. Start with the Fusion window.
+- **Never suspend a raw-disk VM**: on suspend VMware's MountHelper mounts the disk's volumes in macOS. It mounted
+  the suspended guest's `/boot` (FAT, still open in the guest); macOS's FAT driver looped
+  (`cluster 13084 is free where it should be in use`, 2.4 million log lines) and froze the Mac. Pause instead.
+- Screen Sharing with Remote Management on: the user must be on the ARD access list, otherwise the login fails
+  with a misleading "wrong password" (log: `remote management`, `not valid admin`).
+- `vmxnet3` in a hand-written Fusion vmx needs `pciBridge0` + `pciBridge4..7`; after a failed start, delete the
+  `*.pciSlotNumber` lines VMware wrote.
+
+## 2026-11-22: the KVM macOS VM inherited the old slow config
+- `build-igpu-image.sh` builds the VM's OpenCore from `oc-build/EFI/OC/config.plist.binary-bak`, an old backup
+  of the real config (`SetApfsTrimTimeout -1`). `make-vm-config.py` now always sets it to 0 and drops the debug
+  boot-args and OpenCore logging unless `--debug`. Rebuild the image to get it (see 03-macos.md, "Speed").

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Turn the laptop's real Hackintosh OpenCore config into a VM-only config.
 
-Usage: python3 make-vm-config.py <in config.plist> <out config.plist> [--igpu] [--serial]
+Usage: python3 make-vm-config.py <in config.plist> <out config.plist> [--igpu] [--serial] [--debug]
   --serial: add serial=3 (kernel log on the VM serial port). Debug only: on the desktop it caused boot panics.
+  --debug: keep verbose/debug boot-args (-v keepsyms=1 debug=0x100) and OpenCore logging. Off by default (speed).
   --igpu: keep the real iGPU DeviceProperties (UHD 630 passed through at 00:02.0, domain macos-igpu)
 Reads the real config (XML or binary), writes XML (OpenCore cannot parse binary plists).
 SMBIOS is kept as-is and is never printed. The real EFI on nvme1n1 is never touched.
@@ -42,10 +43,15 @@ KEEP = {
 for k in d['Kernel']['Add']:
     k['Enabled'] = k['BundlePath'] in KEEP
 d['Kernel']['Quirks']['ProvideCurrentCpuInfo'] = True
+# No APFS boot-time trim (2026-11-22, measured on the native boot: "spaceman_scan_free_blocks ... trims took
+# 51 s" right after the dyld shared cache, every boot). macOS 12+ accepts only 0 (off) or -1 (full trim).
+# In the VM the trims only hit the qcow2 overlay anyway. The input config may be an old backup with -1.
+d['Kernel']['Quirks']['SetApfsTrimTimeout'] = 0
+DEBUG = '--debug' in sys.argv[3:]
 
 # boot-args: drop laptop-only args (iGPU backlight, Broadcom, RTC, audio).
 nv = d['NVRAM']['Add'].setdefault('7C436110-AB2A-4BBB-A880-FE41995C9F82', {})
-nv['boot-args'] = '-v keepsyms=1 debug=0x100 revpatch=sbvmm -amfipassbeta'
+nv['boot-args'] = ('-v keepsyms=1 debug=0x100 ' if DEBUG else '') + 'revpatch=sbvmm -amfipassbeta'
 if IGPU:
     # from the real laptop config: keep the panel online, backlight register fix
     # amfi=0x80: with the iGPU attached, applekeystored died on the OCLP-patched IO80211.framework
@@ -90,6 +96,12 @@ if IGPU:
     d['UEFI']['ConnectDrivers'] = True
 d['UEFI'].setdefault('Audio', {})['AudioSupport'] = False
 d['UEFI'].setdefault('APFS', {})['EnableJumpstart'] = True
+
+# OpenCore logging off unless --debug (file/serial logging slows the boot).
+if not DEBUG:
+    d['Misc']['Debug']['Target'] = 0
+    d['Misc']['Debug']['AppleDebug'] = False
+    d['Misc']['Debug']['ApplePanic'] = False
 
 # Picker: built-in text picker, longer timeout, so VNC shows what happens.
 d['Misc']['Boot']['PickerMode'] = 'Builtin'

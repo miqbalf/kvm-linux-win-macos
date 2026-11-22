@@ -72,3 +72,28 @@ The VNC password is in `/etc/libvirt/vnc-laptop.pass` (root only). Repo XML keep
 Regenerate its config from the real one with `vm/macos/make-vm-config.py` (XML output, laptop ACPI/kexts off,
 only OpenRuntime driver), copy into the image (`mount -o loop opencore-lt.img /mnt/ocimg`), then reinstall it
 with the setup script. Booting the Hackintosh natively invalidates `nvme1-overlay.qcow2`: delete it and rerun setup.
+
+## Speed: making the VM boot like the native OpenCore boot (2026-11-22)
+Lessons from the native boot ([11-native-macos.md](11-native-macos.md)) applied to the VM:
+
+Done in the repo (needs an image rebuild: `sudo bash laptop/vm/macos/build-igpu-image.sh`):
+- `SetApfsTrimTimeout = 0` (the input config is an old backup with -1: about 50 s of trim on every boot).
+- No debug boot-args (`-v keepsyms=1 debug=0x100`) and no OpenCore logging unless `--debug`.
+
+To measure in the guest after a boot (same as native):
+```
+/usr/bin/log show --last boot --style compact --predicate 'eventMessage CONTAINS "spaceman_scan_free_blocks" OR eventMessage CONTAINS "hello, launchd" OR eventMessage CONTAINS "Early boot timed out"'
+```
+or `hackmon report` (installed on the same macOS, so it also runs in the VM).
+
+Next candidates, to test one at a time and measure (not done yet):
+1. CPU pinning: the i5-10300H has 4 cores / 8 threads (CPU n and n+4 are siblings). Pin the 6 vCPUs to host
+   CPUs 1-3 and 5-7, the emulator and I/O threads to 0 and 4, keep `cores='3' threads='2'`.
+2. An `iothread` for the overlay disk.
+3. Memory: 12 GB without hugepages now; try transparent hugepages (`always`/`madvise`) before static hugepages
+   (static ones take RAM away from Linux and Windows).
+4. Disk path: SATA (AHCI) on `machine='pc'`. q35 + a faster controller is possible but changes the PCI layout the
+   iGPU DeviceProperties rely on (`PciRoot(0x0)/Pci(0x2,0x0)`): test carefully.
+5. The overlay `nvme1-overlay.qcow2` grows with every guest write; a large, fragmented overlay on btrfs slows I/O
+   (consider `chattr +C` on the images directory for new files, or periodically recreating the overlay).
+6. Inside the guest: Bitdefender's 30 s ES wait and Spotlight/Google Drive indexing apply to the VM too.
