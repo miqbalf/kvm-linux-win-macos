@@ -16,6 +16,9 @@ Disk numbers (`disk0s1`/`disk1s1`) swap between boots on this laptop; mount the 
 `PlatformInfo > SMBIOS` if you use it). The placeholders are `REPLACE_WITH_YOUR_SERIAL`, `REPLACE_WITH_YOUR_MLB`,
 an all-zero UUID and an all-zero ROM.
 
+Overview, full change list, live audit (CPU power management, dGPU off, iGPU, audio, USB, ACPI, APFS) and
+monitoring tools: [laptop/docs/11-native-macos.md](../../laptop/docs/11-native-macos.md).
+
 ## Key choices
 - dGPU off: `SSDT-NoHybGfx` + `-wegnoegpu`. macOS has no Turing (GTX 1650) driver.
 - iGPU: WhateverGreen, `igfxonln=1`, `-igfxblr -igfxblt -igfxbls` (backlight).
