@@ -40,13 +40,11 @@ KEEP = {
     'AMFIPass.kext', 'IOSkywalkFamily.kext', 'IO80211FamilyLegacy.kext',
     'IO80211FamilyLegacy.kext/Contents/PlugIns/AirPortBrcmNIC.kext', 'BlueToolFixup.kext',
 }
-if IGPU:
-    # macos-igpu also gets the laptop's Apple BCM4360 Wi-Fi (PCI passthrough) and Apple Bluetooth (USB),
-    # so Continuity / Universal Control / AirDrop work as on the native boot (gpu-mode attaches them).
-    KEEP |= {
-        'AirportBrcmFixup.kext', 'AirportBrcmFixup.kext/Contents/PlugIns/AirPortBrcm4360_Injector.kext',
-        'AirportBrcmFixup.kext/Contents/PlugIns/AirPortBrcmNIC_Injector.kext',
-    }
+# Wi-Fi in macos-igpu (BCM4360 passed through by `gpu-mode mac --radios`): Apple's own driver
+# (IO80211FamilyLegacy + AirPortBrcmNIC, kept above) handles the genuine Apple card 106b:0117.
+# No AirportBrcmFixup: it disables WoWL, leaving wlc->wowl NULL, and AirPort_BrcmNIC::SetCryptoKey ->
+# wlc_ol_armtx -> wlc_wowl_get_replay_counter then panics at WPA key install (NULL + 0x160, 2026-11-22,
+# with and without brcmfx-wowl=0).
 for k in d['Kernel']['Add']:
     k['Enabled'] = k['BundlePath'] in KEEP
 d['Kernel']['Quirks']['ProvideCurrentCpuInfo'] = True
@@ -64,8 +62,6 @@ if IGPU:
     # amfi=0x80: with the iGPU attached, applekeystored died on the OCLP-patched IO80211.framework
     # (code signature) despite AMFIPass -> kernel panic, black screen (2026-11-19).
     nv['boot-args'] += ' igfxonln=1 -igfxblr amfi=0x80'
-    # No brcmfx-wowl=0 (native has it): in the VM it panics at WPA key install, 2026-11-22 serial log:
-    # AirPort_BrcmNIC::SetCryptoKey -> wlc_ioctl -> wlc_ol_armtx -> wlc_wowl_get_replay_counter, NULL + 0x160.
     # No verbose text on the real panel: drawing it into the uncached GOP framebuffer is so slow
     # that XNU times out starting the other CPUs ("Failed to start CPU 01, rebooting", 2026-11-19).
     nv['boot-args'] = nv['boot-args'].replace('-v ', '', 1)
