@@ -1,0 +1,4 @@
+# User target: headless Linux desktop over RDP (port 3389) while macOS has the laptop screen.
+[Unit]
+Description=Headless Linux desktop over RDP
+Wants=linux-headless-shell.service gnome-remote-desktop-headless.service

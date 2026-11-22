@@ -128,6 +128,14 @@ net_backup() {
   nmcli connection up "$new" ifname "$dongle" >/dev/null || die "the dongle did not connect to $prof"
   log "backup network: $dongle on $prof ($(ip -4 -br addr show dev "$dongle" | awk '{print $3}'))"
 }
+# Headless Linux desktop over RDP while macOS has the screen (laptop/host/headless-rdp/setup.sh).
+DESKTOP_USER=$(id -nu 1000 2>/dev/null)
+rdp_on()  { [ -f /etc/systemd/user/linux-headless-rdp.target ] || return 0
+            systemctl --user -M "$DESKTOP_USER@" start linux-headless-rdp.target >/dev/null 2>&1 \
+              && log "Linux desktop over RDP: port 3389, user $DESKTOP_USER" || log "WARN: headless RDP did not start"; }
+rdp_off() { [ -f /etc/systemd/user/linux-headless-rdp.target ] || return 0
+            systemctl --user -M "$DESKTOP_USER@" stop linux-headless-rdp.target linux-headless-shell.service \
+              gnome-remote-desktop-headless.service >/dev/null 2>&1 || true; }
 TP_UNIT=gpu-mode-touchpad
 TP_DEV=/dev/input/gpu-mode-touchpad
 # Touchpad -> virtual mouse with tap-to-click for the VM (host/touchpad-bridge).
@@ -295,6 +303,7 @@ to_mac() {
 
   if ! virsh start "$VM"; then to_host_hw; die "virsh start failed, host restored"; fi
   wd_start
+  rdp_on
   for i in $(seq 1 36); do
     sleep 5
     [ "$(state $VM)" = running ] || { to_host_hw; die "$VM stopped during boot, host restored"; }
@@ -304,6 +313,7 @@ to_mac() {
 }
 
 to_host_hw() {
+  rdp_off   # before GDM: the headless shell must not run next to the real session
   tp_stop
   wd_stop
   echo > "$DEV/driver_override"
