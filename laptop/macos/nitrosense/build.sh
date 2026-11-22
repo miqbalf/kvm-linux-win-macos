@@ -14,5 +14,7 @@ cd "$SRC"
 git checkout -q "$BASE"
 git checkout -q -B an515-55
 git apply --check "$HERE/an515-55.patch" 2>/dev/null && git apply "$HERE/an515-55.patch"
-make kext cli
+make kext cli daemon
+[ -d build/NitroSense.app ] || make app   # app needs Xcode (SwiftUI macros)
+echo "DMG: bash Scripts/make-dmg-an515-55.sh"
 echo "Built: $SRC/build/NitroEC.kext and $SRC/build/nitroctl"

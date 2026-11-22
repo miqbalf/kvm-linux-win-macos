@@ -1,16 +1,19 @@
-From 688269ff30f65f4e3a73fd678e370ecc04614907 Mon Sep 17 00:00:00 2001
-From: kvm-linux-win-macos <noreply@users.noreply.github.com>
-Date: Sun, 22 Nov 2026 13:32:23 +0700
-Subject: [PATCH] AN515-55 port
-
----
- CLI/main.swift       |   2 +
- Core/NitroCore.swift |  46 ++++++-----
- Kext/Info.plist      |  15 +++-
- Kext/NitroEC.cpp     | 182 +++++++++++++++++++++----------------------
- Kext/NitroEC.hpp     |   8 +-
- 5 files changed, 137 insertions(+), 116 deletions(-)
-
+diff --git a/App/Views.swift b/App/Views.swift
+index 7cb6b65..6919a83 100644
+--- a/App/Views.swift
++++ b/App/Views.swift
+@@ -528,11 +528,6 @@ struct SettingsMenu: View {
+         VStack(alignment: .leading, spacing: 8) {
+             Section("Power Settings") {
+                 SettingRow(label: "Battery charge limit (80%)", isOn: model.config.batteryLimit) { set(\.batteryLimit, "batteryLimit", $0) }
+-                SettingRow(label: "USB charging when powered off", isOn: model.config.usbCharge) { set(\.usbCharge, "usbCharge", $0) }
+-            }
+-            Divider().overlay(Color(white: 0.25))
+-            Section("Keyboard Settings") {
+-                SettingRow(label: "Backlight off after 30 seconds", isOn: model.config.kbTimeout) { set(\.kbTimeout, "kbTimeout", $0) }
+             }
+             Divider().overlay(Color(white: 0.25))
+             Section("General") {
 diff --git a/CLI/main.swift b/CLI/main.swift
 index 64e741d..bc0f0e3 100644
 --- a/CLI/main.swift
@@ -25,7 +28,7 @@ index 64e741d..bc0f0e3 100644
          guard args.count >= 2, let index = ledEffects.firstIndex(of: args[1].lowercased()) else {
              throw NitroECError(description: "effect must be one of: \(ledEffects.joined(separator: " "))")
 diff --git a/Core/NitroCore.swift b/Core/NitroCore.swift
-index a9b9255..518858b 100644
+index a9b9255..4188f92 100644
 --- a/Core/NitroCore.swift
 +++ b/Core/NitroCore.swift
 @@ -238,6 +238,8 @@ enum FanUnit: CaseIterable {
@@ -80,7 +83,7 @@ index a9b9255..518858b 100644
          }
      }
  }
-@@ -395,3 +396,12 @@ func applyLED(_ ec: NitroEC, _ led: LEDState) throws {
+@@ -395,3 +396,24 @@ func applyLED(_ ec: NitroEC, _ led: LEDState) throws {
      try checkWMBH(try ec.wmbh(0x14, bytes), "LED effect")
  }
  
@@ -93,6 +96,86 @@ index a9b9255..518858b 100644
 +    bytes[9] = 1
 +    try checkWMBH(try ec.wmbh(0x14, bytes), "static mode after zones")
 +}
++
++// AN515-55 fan primitives (firmware WMBH 0x0E behavior + 0x10 duty). Mode bits:
++// 1 auto, 2 max, 3 manual; CPU in bits 0-1, GPU in bits 6-7.
++func setFanMode(_ ec: NitroEC, _ unit: FanUnit, _ mode: UInt8) throws {
++    let mask: UInt8 = unit == .cpu ? 0x01 : 0x08
++    let bits: UInt8 = unit == .cpu ? mode : mode << 6
++    try checkWMBH(try ec.wmbh(0x0E, [mask, 0, bits]), "fan mode")
++}
++
++func setFanDuty(_ ec: NitroEC, _ unit: FanUnit, _ percent: Int) throws {
++    try checkWMBH(try ec.wmbh(0x10, [unit.wmbhGroup, UInt8(percent)]), "fan duty")
++}
+diff --git a/Daemon/main.swift b/Daemon/main.swift
+index b66de10..777eedd 100644
+--- a/Daemon/main.swift
++++ b/Daemon/main.swift
+@@ -122,8 +122,7 @@ final class Daemon {
+         step("psee") { try setPSEE(ec, true) }
+         step("mode") { try setNitroMode(ec, config.nitroMode) }
+         step("battery limit") { try setBatteryLimit(ec, config.batteryLimit) }
+-        step("usb charge") { try setUSBCharge(ec, config.usbCharge) }
+-        step("kb timeout") { try setKBTimeout(ec, config.kbTimeout) }
++        // AN515-55: USB charge and KB timeout are raw EC writes, not supported.
+         step("led") { try applyLEDConfig() }
+         applyFans()
+     }
+@@ -139,14 +138,15 @@ final class Daemon {
+                 let (r, g, b) = try parseRGB(zone)
+                 try checkWMBH(try ec.wmbh(0x06, [UInt8(1 << i), r, g, b]), "zone colour")
+             }
++            try applyStaticAfterZones(ec, brightness: UInt8(led.brightness))
+         }
+     }
+ 
+     func setUnit(_ unit: FanUnit, manualPercent percent: Int) throws {
+-        try ec.writeByte(unit.speedReg, percent)
+         if Int(try ec.readByte(UInt8(unit.modeReg))) != unit.manual {
+-            try ec.writeByte(unit.modeReg, unit.manual)
++            try setFanMode(ec, unit, 3)
+         }
++        try setFanDuty(ec, unit, percent)
+         duty[unit] = percent
+     }
+ 
+@@ -161,14 +161,14 @@ final class Daemon {
+             for unit in FanUnit.allCases {
+                 switch config.fan.mode {
+                 case "max":
+-                    try ec.writeByte(unit.modeReg, unit.max)
++                    try setFanMode(ec, unit, 2)
+                 case "manual":
+                     try setUnit(unit, manualPercent: unit == .cpu ? config.fan.cpuPercent : config.fan.gpuPercent)
+                 case "curve":
+-                    if !curveDrives(unit) { try ec.writeByte(unit.modeReg, unit.auto) }
++                    if !curveDrives(unit) { try setFanMode(ec, unit, 1) }
+                     // otherwise the next tick picks the duty
+                 default:
+-                    try ec.writeByte(unit.modeReg, unit.auto)
++                    try setFanMode(ec, unit, 1)
+                 }
+             }
+         }
+@@ -195,7 +195,7 @@ final class Daemon {
+             step("failsafe") {
+                 try setPSEE(ec, true)
+                 for unit in FanUnit.allCases where Int(d[unit.modeReg]) != unit.max {
+-                    try ec.writeByte(unit.modeReg, unit.max)
++                    try setFanMode(ec, unit, 2)
+                 }
+             }
+             return
+@@ -229,7 +229,7 @@ final class Daemon {
+         log("stopping: fans back to Auto")
+         powerMeter.stop()
+         for unit in FanUnit.allCases {
+-            _ = try? ec.writeByte(unit.modeReg, unit.auto)
++            _ = try? setFanMode(ec, unit, 1)
+         }
+         unlink(nitrodSocketPath)
+         exit(0)
 diff --git a/Kext/Info.plist b/Kext/Info.plist
 index d48f0b1..210810c 100644
 --- a/Kext/Info.plist
@@ -420,6 +503,126 @@ index a920696..6db5aa4 100644
  
  public:
      bool start(IOService *provider) override;
--- 
-2.54.0 (Apple Git-157)
-
+diff --git a/Scripts/install-an515-55.command b/Scripts/install-an515-55.command
+new file mode 100755
+index 0000000..e67fcb0
+--- /dev/null
++++ b/Scripts/install-an515-55.command
+@@ -0,0 +1,61 @@
++#!/bin/bash
++# NitroSense for Acer Nitro 5 AN515-55 (macOS Hackintosh). Double-click to install.
++# Installs: NitroEC.kext (/Library/Extensions), nitrod daemon, nitroctl, NitroSense.app.
++# No SSDT and no OpenCore change needed on the AN515-55.
++set -euo pipefail
++HERE="$(cd "$(dirname "$0")" && pwd)"
++P="$HERE/.payload"
++echo "NitroSense AN515-55 installer. Your password is needed (sudo)."
++sudo -v
++
++# 1. kext
++sudo rm -rf /Library/Extensions/NitroEC.kext
++sudo cp -R "$P/NitroEC.kext" /Library/Extensions/
++sudo chown -R root:wheel /Library/Extensions/NitroEC.kext
++if sudo kmutil load -p /Library/Extensions/NitroEC.kext; then
++    KEXT_OK=1
++else
++    KEXT_OK=0
++fi
++
++# 2. daemon + CLI
++DEST="/Library/Application Support/NitroSense"
++LABEL="com.nitrosense.nitrod"
++PLIST="/Library/LaunchDaemons/$LABEL.plist"
++sudo launchctl bootout "system/$LABEL" 2>/dev/null || true
++sudo mkdir -p "$DEST"
++sudo install -o root -g wheel -m 755 "$P/nitrod" "$DEST/nitrod"
++sudo install -o root -g wheel -m 755 "$P/nitroctl" "$DEST/nitroctl"
++sudo mkdir -p /usr/local/bin
++sudo ln -sf "$DEST/nitroctl" /usr/local/bin/nitroctl
++sudo tee "$PLIST" >/dev/null <<PL
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++    <key>Label</key><string>$LABEL</string>
++    <key>ProgramArguments</key><array><string>$DEST/nitrod</string></array>
++    <key>RunAtLoad</key><true/>
++    <key>KeepAlive</key><true/>
++    <key>ThrottleInterval</key><integer>10</integer>
++    <key>StandardErrorPath</key><string>/var/log/nitrod.log</string>
++</dict>
++</plist>
++PL
++sudo chown root:wheel "$PLIST"; sudo chmod 644 "$PLIST"
++sudo launchctl bootstrap system "$PLIST" || true
++
++# 3. app
++pkill -x NitroSense 2>/dev/null || true
++sudo rm -rf /Applications/NitroSense.app
++sudo ditto "$HERE/NitroSense.app" /Applications/NitroSense.app
++sudo chown -R "$(id -un)":staff /Applications/NitroSense.app
++open /Applications/NitroSense.app || true
++
++echo
++if [ "$KEXT_OK" = 1 ]; then
++    echo "Done. NitroSense is in the menu bar."
++else
++    echo "Done. macOS must allow the kext: System Settings > Privacy & Security > Allow, then restart."
++fi
++read -r -p "Press Enter to close."
+diff --git a/Scripts/make-dmg-an515-55.sh b/Scripts/make-dmg-an515-55.sh
+new file mode 100755
+index 0000000..3a69aae
+--- /dev/null
++++ b/Scripts/make-dmg-an515-55.sh
+@@ -0,0 +1,31 @@
++#!/bin/bash
++# Build everything (no SSDT) and pack NitroSense-AN515-55-<version>.dmg.
++set -euo pipefail
++ROOT="$(cd "$(dirname "$0")/.." && pwd)"
++VERSION="${VERSION:-1.1.0-an515-55}"
++cd "$ROOT"
++make kext cli daemon
++# The app needs Xcode (SwiftUI macros); CLT alone cannot build it. Build it with Xcode first if missing.
++[ -d build/NitroSense.app ] || make app
++STAGE="$(mktemp -d)/NitroSense"
++mkdir -p "$STAGE/.payload"
++ditto build/NitroSense.app "$STAGE/NitroSense.app"
++ditto build/NitroEC.kext "$STAGE/.payload/NitroEC.kext"
++cp build/nitrod build/nitroctl "$STAGE/.payload/"
++cp Scripts/install-an515-55.command "$STAGE/Install NitroSense.command"
++cp Scripts/uninstall-an515-55.command "$STAGE/Uninstall NitroSense.command"
++chmod +x "$STAGE"/*.command
++cat > "$STAGE/README.txt" <<TXT
++NitroSense for Acer Nitro 5 AN515-55 (macOS Hackintosh), $VERSION
++
++1. Double-click "Install NitroSense.command" (asks for your password).
++2. First time only: allow the kext in System Settings > Privacy & Security, then restart.
++3. NitroSense sits in the menu bar: fans (Auto / Max / Manual / Curve) and keyboard RGB.
++   Terminal: nitroctl status, sudo nitroctl fan all max, sudo nitroctl led zone all 00FF00
++
++Needs SIP that allows unsigned kexts. Based on NitroSense-macOS (GPL-3.0).
++TXT
++OUT="$ROOT/dist/NitroSense-AN515-55-$VERSION.dmg"
++mkdir -p "$ROOT/dist"; rm -f "$OUT"
++hdiutil create -volname "NitroSense AN515-55" -srcfolder "$STAGE" -fs HFS+ -format UDZO "$OUT" >/dev/null
++echo "$OUT"
+diff --git a/Scripts/uninstall-an515-55.command b/Scripts/uninstall-an515-55.command
+new file mode 100755
+index 0000000..1f8eb0d
+--- /dev/null
++++ b/Scripts/uninstall-an515-55.command
+@@ -0,0 +1,13 @@
++#!/bin/bash
++# Remove NitroSense (AN515-55): app, daemon (fans back to Auto), CLI, kext.
++set -uo pipefail
++sudo -v
++pkill -x NitroSense 2>/dev/null
++sudo launchctl bootout system/com.nitrosense.nitrod 2>/dev/null
++sudo rm -f /Library/LaunchDaemons/com.nitrosense.nitrod.plist /usr/local/bin/nitroctl
++sudo rm -rf "/Library/Application Support/NitroSense" /Applications/NitroSense.app
++sudo kmutil unload -b com.nitrosense.NitroEC 2>/dev/null
++sudo rm -rf /Library/Extensions/NitroEC.kext
++sudo kmutil clear-staging 2>/dev/null
++echo "Removed. Restart to drop the kext from the kernel cache."
++read -r -p "Press Enter to close."

@@ -101,9 +101,16 @@ sudo nitroctl led effect wave
 Tested 2026-11-22 on macOS 26.7.3: Max took the fans from 3125 / 3703 rpm to 5882 / 6122 rpm, Auto brought
 them back down; zone colours showed on the keyboard.
 
-Not done yet: the `nitrod` daemon and the menu-bar app still use the AN515-57 fan path (raw EC writes, which
-the patched kext refuses), so only `nitroctl` works. Settings are not restored after a reboot. In `nitroctl status`
-the "Nitro mode" and "Power" lines use AN515-57 meanings and are not reliable here.
+App and daemon (DMG): download `NitroSense-AN515-55-*.dmg` from the GitHub release
+[nitrosense-an515-55-v1.1.0](https://github.com/miqbalf/kvm-linux-win-macos/releases/tag/nitrosense-an515-55-v1.1.0),
+open it, double-click **Install NitroSense.command**. It installs the kext, the `nitrod` LaunchDaemon (re-applies
+fans and LED at boot and wake), `nitroctl` and the menu-bar app. The daemon uses the same WMBH fan calls as
+`nitroctl`. "USB charging when off" and "backlight off after 30 s" are hidden: they need raw EC writes, which the
+patched kext refuses. Build the DMG yourself with `Scripts/make-dmg-an515-55.sh` (the app needs Xcode for the
+SwiftUI macros; kext, daemon and CLI build with Command Line Tools only).
+
+Status 2026-11-22: kext and `nitroctl` tested on hardware; app and daemon built but not yet tested. In
+`nitroctl status` the "Nitro mode" and "Power" lines use AN515-57 meanings and are not reliable here.
 
 Lesson: the first build mapped `0xFC7E0800` with `IOMemoryDescriptor::withAddressRange(..., kernel_task)`,
 which treats the address as kernel-virtual, and panicked in `NitroEC::start` (page fault at `0xfc7e08b0`).
