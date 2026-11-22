@@ -64,7 +64,8 @@ if IGPU:
     # amfi=0x80: with the iGPU attached, applekeystored died on the OCLP-patched IO80211.framework
     # (code signature) despite AMFIPass -> kernel panic, black screen (2026-11-19).
     nv['boot-args'] += ' igfxonln=1 -igfxblr amfi=0x80'
-    nv['boot-args'] += ' brcmfx-wowl=0'  # as native: no WoWLAN on the BCM4360 (sleep/wake)
+    # No brcmfx-wowl=0 (native has it): in the VM it panics at WPA key install, 2026-11-22 serial log:
+    # AirPort_BrcmNIC::SetCryptoKey -> wlc_ioctl -> wlc_ol_armtx -> wlc_wowl_get_replay_counter, NULL + 0x160.
     # No verbose text on the real panel: drawing it into the uncached GOP framebuffer is so slow
     # that XNU times out starting the other CPUs ("Failed to start CPU 01, rebooting", 2026-11-19).
     nv['boot-args'] = nv['boot-args'].replace('-v ', '', 1)
