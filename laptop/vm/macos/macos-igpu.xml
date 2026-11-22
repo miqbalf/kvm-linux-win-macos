@@ -43,15 +43,15 @@
       <target dev='sda' bus='sata'/>
       <boot order='1'/>
     </disk>
-    <!-- The real Samsung 980 NVMe controller (07:00.0, own IOMMU group 16), passed through since 2026-11-22:
-         macOS uses its own NVMe driver at native speed and writes the real disk, exactly like the native boot
-         (no overlay, so no stale overlay after a native boot). libvirt takes it from the Linux nvme driver at
-         start and gives it back at shutdown; gpu-mode checks first that Linux has nothing on it mounted or open.
-         Fallback: gpu-mode mac with the overlay option swaps this for the old SATA disk on nvme1-overlay.qcow2. -->
-    <hostdev mode='subsystem' type='pci' managed='yes'>
-      <source><address domain='0x0000' bus='0x07' slot='0x00' function='0x0'/></source>
-      <address type='pci' domain='0x0000' bus='0x00' slot='0x0b' function='0x0'/>
-    </hostdev>
+    <!-- Same copy-on-write overlay as the `macos` domain; /dev/hackintosh-disk (udev name) is only read.
+         NVMe passthrough of the real Samsung (gpu-mode mac with the nvme option) is opt-in: it needs
+         hibernation off in macOS (see docs/03-macos.md). -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='writeback'/>
+      <source file='/var/lib/libvirt/images/macos/nvme1-overlay.qcow2'/>
+      <backingStore type='block'><format type='raw'/><source dev='/dev/hackintosh-disk'/></backingStore>
+      <target dev='sdb' bus='sata'/>
+    </disk>
     <interface type='network'>
       <mac address='52:54:00:aa:bb:61'/>
       <source network='default'/>

@@ -3,7 +3,7 @@
 #   sudo gpu-mode mac      stop GDM, bind iGPU to vfio-pci, start macos-igpu (macOS on the laptop panel)
 #   sudo gpu-mode mac --radios  also give macOS the Wi-Fi + Bluetooth (experimental; Linux keeps only a USB dongle)
 #   sudo gpu-mode mac --wifi    only the Wi-Fi
-#   sudo gpu-mode mac --overlay old disk path (SATA on nvme1-overlay.qcow2) instead of the real NVMe
+#   sudo gpu-mode mac --nvme    real Samsung NVMe passthrough (faster; ONLY with hibernation off in macOS)
 #   sudo gpu-mode net-backup    copy the current Wi-Fi profile to a USB Wi-Fi dongle (Linux network in mac --radios)
 #   sudo gpu-mode host     stop macos-igpu, give the iGPU back to i915, start GDM
 #   sudo gpu-mode win      give the GTX 1650 to win10-gpu (Linux keeps the panel; view: looking-glass-client)
@@ -137,7 +137,9 @@ rdp_on()  { [ -f /etc/systemd/user/linux-headless-rdp.target ] || return 0
 rdp_off() { [ -f /etc/systemd/user/linux-headless-rdp.target ] || return 0
             systemctl --user -M "$DESKTOP_USER@" stop linux-headless-rdp.target linux-headless-shell.service \
               gnome-remote-desktop-headless.service >/dev/null 2>&1 || true; }
-# macOS disk: the real Samsung 980 NVMe controller (default) or the old overlay (`mac --overlay`).
+# macOS disk: the copy-on-write overlay (default; the real disk is only read) or, opt-in with `mac --nvme`, the real
+# Samsung 980 NVMe controller. --nvme needs hibernation off in macOS (hibernatemode 0, standby 0, autopoweroff 0):
+# VM and native boot have separate NVRAM, a native resume from an old sleepimage after VM writes corrupts the disk.
 # Linux must not have anything on the Samsung mounted, open or in use as swap when macOS takes it.
 NVME_PCI=0000:07:00.0
 DISK_NVME="<hostdev mode='subsystem' type='pci' managed='yes'><source><address domain='0x0000' bus='0x07' slot='0x00' function='0x0'/></source><address type='pci' domain='0x0000' bus='0x00' slot='0x0b' function='0x0'/></hostdev>"
@@ -386,10 +388,10 @@ to_host() {
   to_host_hw
 }
 
-RADIOS=off; DISK=nvme
+RADIOS=off; DISK=overlay
 for a in "${@:2}"; do
   case "$a" in
-    --radios) RADIOS=on ;; --wifi) RADIOS=wifi ;; --overlay) DISK=overlay ;;
+    --radios) RADIOS=on ;; --wifi) RADIOS=wifi ;; --overlay) DISK=overlay ;; --nvme) DISK=nvme ;;
     *) echo "unknown option $a"; exit 2 ;;
   esac
 done
@@ -403,5 +405,5 @@ case "${1:-status}" in
   new-overlay)
     [ "$(state $VM)" = "shut off" ] && [ "$(state macos)" = "shut off" ] || die "shut down the macOS VMs first"
     new_overlay ;;
-  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status|new-overlay|net-backup  (mac/mac-bg [--radios|--wifi] [--overlay])"; exit 2 ;;
+  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status|new-overlay|net-backup  (mac/mac-bg [--radios|--wifi] [--nvme])"; exit 2 ;;
 esac
