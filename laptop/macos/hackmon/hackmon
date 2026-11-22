@@ -1,0 +1,115 @@
+#!/bin/bash
+# hackmon: Hackintosh boot-speed and stability monitor (Acer Nitro 5 AN515-55).
+#
+#   hackmon report      write a report for the current boot (LaunchDaemon runs this 4 min after boot)
+#   hackmon daily       errors of the last 24 h (LaunchDaemon, daily 12:30)
+#   hackmon summary     table of all boots (boot time, stalls, panics, errors)
+#   hackmon last        print the latest report
+#
+# Reports: /Library/Logs/HackMon/boot-<date>.txt, CSV: /Library/Logs/HackMon/boots.csv
+set -uo pipefail
+DIR=${HACKMON_DIR:-/Library/Logs/HackMon}
+CSV=$DIR/boots.csv
+LOG=/usr/bin/log            # not the zsh builtin
+mkdir -p "$DIR" 2>/dev/null
+
+boot_epoch() { sysctl -n kern.boottime | sed -E 's/^\{ sec = ([0-9]+),.*/\1/'; }   # "{ sec = N, usec = M } ..." 
+ts() { date -r "$1" '+%Y-%m-%d %H:%M:%S'; }
+rel() { [ -n "$1" ] && echo "+$(( $1 - BOOT )) s" || echo "n/a"; }
+
+# One `log show` pass (each pass over a whole boot takes minutes), then grep the result locally.
+PRED='eventMessage CONTAINS "dyld_shared_cache" OR eventMessage CONTAINS "hello, launchd"
+ OR eventMessage CONTAINS "mounting volume" OR eventMessage CONTAINS "Early boot timed out"
+ OR eventMessage CONTAINS "IOConsoleUsers" OR eventMessage CONTAINS "trims took"
+ OR eventMessage CONTAINS "Previous shutdown cause"
+ OR ((process == "kernel" OR process == "kernelmanagerd") AND (eventMessage CONTAINS[c] "nvme"
+     OR eventMessage CONTAINS "ACPI" OR eventMessage CONTAINS "AE_" OR eventMessage CONTAINS[c] "fail"
+     OR eventMessage CONTAINS[c] "error" OR eventMessage CONTAINS[c] "hang" OR eventMessage CONTAINS[c] "timeout"))'
+TMPF=$(mktemp -t hackmon); trap 'rm -f "$TMPF"' EXIT
+collect() { $LOG show --start "$1" --style compact --predicate "$(echo $PRED)" 2>/dev/null | grep -E '^[0-9]{4}-' > "$TMPF"; }
+# first matching line -> epoch seconds
+first_at() { local l; l=$(grep -m1 -E "$1" "$TMPF"); [ -n "$l" ] && date -j -f '%Y-%m-%d %H:%M:%S' "${l:0:19}" +%s; }
+R_NVME='[Nn][Vv][Mm][Ee].*([Ee]rror|[Tt]imeout|MMIO|[Ff]ail)'
+R_ACPI='ACPI Error|ACPI Exception|AE_NOT_FOUND|AE_AML'
+R_KEXT='[Ff]ailed to load|[Kk]ext.*[Ff]ail|Lilu.*[Ee]rror|WhateverGreen.*[Ff]ail'
+R_GPU='(IGPU|AppleIntelFramebuffer).*([Ff]ail|[Hh]ang|[Tt]imeout)'
+# known harmless noise: Apple's missing AppleKIS, IGPU info line
+NOISE='AppleKIS|Will NOT fallback to host-side|com\.apple\.nke\.|IOVersatile'
+count() { grep -E "$1" "$TMPF" | grep -cvE "$NOISE"; }
+lines() { grep -E "$1" "$TMPF" | grep -vE "$NOISE" | cut -c1-220 | sort -u -k4 | head -"${2:-15}"; }
+
+report() {
+    BOOT=$(boot_epoch)
+    local f="$DIR/boot-$(date -r "$BOOT" '+%Y%m%d-%H%M').txt"
+    local dyld launchd data es login trim
+    collect "$(ts "$BOOT")"
+    dyld=$(first_at 'dyld_shared_cache_x86_64h')
+    launchd=$(first_at 'hello, launchd')
+    data=$(first_at 'mounting volume.*- Data')
+    es=$(first_at 'Early boot timed out')
+    login=$(first_at 'IOConsoleUsers.*llk 1')
+    trim=$(grep -m1 -oE 'trims took [0-9.]+ s' "$TMPF" | grep -oE '[0-9.]+')
+    local S; S=$(ts "$BOOT")
+    local nvme acpi kext gpu panics cause
+    nvme=$(count "$R_NVME"); acpi=$(count "$R_ACPI"); kext=$(count "$R_KEXT"); gpu=$(count "$R_GPU")
+    panics=$(find /Library/Logs/DiagnosticReports -name 'Kernel-*.panic' -newermt "$(date -r $((BOOT - 86400*30)) '+%Y-%m-%d')" 2>/dev/null | wc -l | tr -d ' ')
+    cause=$(grep -m1 -oE 'cause: -?[0-9]+' "$TMPF" | grep -oE -- '-?[0-9]+')
+    {
+        echo "HackMon boot report  $(ts "$BOOT")   $(sw_vers -productVersion) ($(sw_vers -buildVersion))   OpenCore $(nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:opencore-version 2>/dev/null | awk '{print $2}')"
+        echo "boot-args: $(sysctl -n kern.bootargs)"
+        echo
+        echo "== Boot timeline (from kernel start)"
+        echo "  dyld shared cache   $(rel "$dyld")"
+        echo "  launchd started     $(rel "$launchd")"
+        echo "  Data volume mount   $(rel "$data")"
+        echo "  APFS boot trim      ${trim:-0} s   (SetApfsTrimTimeout 0 = no trim; monthly full trim is expected to take ~50 s)"
+        echo "  EndpointSecurity    $(rel "$es")   (Bitdefender early-boot wait, 30 s)"
+        echo "  login window        $(rel "$login")"
+        echo
+        echo "== Stability"
+        echo "  previous shutdown cause: ${cause:-n/a}   (5 = normal, 0 = power loss/forced, -128/-20/-60 = various hard resets)"
+        echo "  kernel panics in last 30 days: $panics"
+        ls -t /Library/Logs/DiagnosticReports/Kernel-*.panic 2>/dev/null | head -3 | while read -r p; do
+            echo "    $(basename "$p"): $(grep -o 'panic(cpu[^\\]*' "$p" | head -1 | cut -c1-160)"; done
+        echo "  NVMe errors this boot: $nvme"; [ "$nvme" -gt 0 ] && lines "$R_NVME" 10 | sed 's/^/    /'
+        echo "  ACPI errors this boot: $acpi"; [ "$acpi" -gt 0 ] && lines "$R_ACPI" 10 | sed 's/^/    /'
+        echo "  kext problems this boot: $kext"; [ "$kext" -gt 0 ] && lines "$R_KEXT" 10 | sed 's/^/    /'
+        echo "  iGPU errors this boot: $gpu"; [ "$gpu" -gt 0 ] && lines "$R_GPU" 10 | sed 's/^/    /'
+        echo
+        echo "== Sleep/wake (last 24 h)"
+        pmset -g log 2>/dev/null | grep -E '^[0-9]{4}-.*(Sleep  |Wake  |DarkWake|Failure)' | tail -8 | cut -c1-160 | sed 's/^/  /'
+        echo
+        echo "== Third-party kexts loaded"
+        kmutil showloaded --list-only 2>/dev/null | grep -vE 'com\.apple\.' | awk '{for(i=2;i<=NF;i++) if($i ~ /^\(/){print "  " $(i-1), $i; break}}' | head -40
+        echo
+        echo "== Temperatures (NitroEC)"
+        { /usr/local/bin/nitroctl status 2>/dev/null || "/Library/Application Support/NitroSense/nitroctl" status 2>/dev/null; } | head -3 | sed 's/^/  /'
+    } > "$f"
+    [ -f "$CSV" ] || echo "boot,os,opencore,dyld_s,launchd_s,data_s,trim_s,es_s,login_s,panics30d,nvme,acpi,kext,igpu,prev_cause" > "$CSV"
+    grep -q "^$(ts "$BOOT")," "$CSV" || echo "$(ts "$BOOT"),$(sw_vers -productVersion),$(nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:opencore-version 2>/dev/null | awk '{print $2}'),$([ -n "$dyld" ] && echo $((dyld-BOOT))),$([ -n "$launchd" ] && echo $((launchd-BOOT))),$([ -n "$data" ] && echo $((data-BOOT))),${trim:-0},$([ -n "$es" ] && echo $((es-BOOT))),$([ -n "$login" ] && echo $((login-BOOT))),$panics,$nvme,$acpi,$kext,$gpu,${cause:-}" >> "$CSV"
+    ln -sf "$f" "$DIR/latest.txt"
+    echo "$f"
+}
+
+daily() {
+    local S; S=$(date -v-24H '+%Y-%m-%d %H:%M:%S')
+    local f="$DIR/daily-$(date '+%Y%m%d').txt"
+    {
+        echo "HackMon daily  $(date '+%F %T')  (last 24 h)"
+        collect "$S"
+        for n in NVME ACPI KEXT GPU; do
+            eval "p=\$R_$n"; c=$(count "$p"); echo "== $n: $c"; [ "$c" -gt 0 ] && lines "$p" 10 | sed 's/^/  /'
+        done
+        echo "== panics: $(find /Library/Logs/DiagnosticReports -name 'Kernel-*.panic' -mtime -1 | wc -l | tr -d ' ')"
+        echo "== sleep/wake failures: $(pmset -g log 2>/dev/null | grep -c 'Failure')"
+    } > "$f"
+    echo "$f"
+}
+
+case "${1:-summary}" in
+report) report ;;
+daily) daily ;;
+last) cat "$DIR/latest.txt" ;;
+summary) column -s, -t < "$CSV" 2>/dev/null || echo "no boots recorded yet (sudo hackmon report)" ;;
+*) echo "usage: hackmon report|daily|summary|last"; exit 2 ;;
+esac

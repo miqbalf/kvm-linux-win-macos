@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.local.hackmon</string>
+    <key>ProgramArguments</key>
+    <array><string>/bin/bash</string><string>-c</string>
+        <string>sleep 240; /usr/local/bin/hackmon report</string></array>
+    <key>RunAtLoad</key><true/>
+    <key>LowPriorityIO</key><true/>
+    <key>Nice</key><integer>10</integer>
+    <key>StandardOutPath</key><string>/Library/Logs/HackMon/daemon.log</string>
+    <key>StandardErrorPath</key><string>/Library/Logs/HackMon/daemon.log</string>
+</dict>
+</plist>

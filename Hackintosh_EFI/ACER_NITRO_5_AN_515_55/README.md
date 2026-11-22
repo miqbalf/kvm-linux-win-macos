@@ -59,8 +59,8 @@ How to measure a boot (no verbose needed):
   `ResetNvramEntry`; new key `UEFI > Drivers > HideVerbose`. `ocvalidate` 1.0.8: no issues.
 - AppleALC 1.9.8, AirportBrcmFixup 2.2.1.
 - Removed: `XHCI-unsupported`, `CPUFriend`, `CPUFriendDataProvider`, `CtlnaAHCIPort`, `ACPIMonitor`,
-  `SMCLightSensor`, `SSDT-FANT`, `SSDT-off-gpu` (`SSDT-NoHybGfx` already turns off the dGPU). Boot, USB, sleep
-  and the trackpad worked after removal.
+  `SMCLightSensor`, `SSDT-FANT`, `SSDT-off-gpu` (`SSDT-NoHybGfx` already turns off the dGPU). The laptop boots and
+  runs normally after removal (sleep not yet retested).
 - Added `NitroEC.kext` (fans + RGB).
 
 Measured result (unified log, same laptop): boot to login about 101 s before, about 49 s after; dyld shared cache
