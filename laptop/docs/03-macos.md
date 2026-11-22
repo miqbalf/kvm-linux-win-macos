@@ -71,7 +71,10 @@ The VNC password is in `/etc/libvirt/vnc-laptop.pass` (root only). Repo XML keep
 `vm/macos/opencore-lt.img` is a VM-only copy of the laptop's EFI (gitignored: holds SMBIOS serials).
 Regenerate its config from the real one with `vm/macos/make-vm-config.py` (XML output, laptop ACPI/kexts off,
 only OpenRuntime driver), copy into the image (`mount -o loop opencore-lt.img /mnt/ocimg`), then reinstall it
-with the setup script. Booting the Hackintosh natively invalidates `nvme1-overlay.qcow2`: delete it and rerun setup.
+with the setup script. Booting the Hackintosh natively invalidates `nvme1-overlay.qcow2`. `gpu-mode mac` detects this
+(fingerprint of the APFS container superblock and checkpoint area, stored in `nvme1-overlay.qcow2.base-fp`) and
+recreates the overlay by itself; `sudo gpu-mode new-overlay` does it by hand. A stale overlay looks like OpenCore
+"Halting on critical error" with only vCPU0 running (2026-11-22).
 
 ## Speed: making the VM boot like the native OpenCore boot (2026-11-22)
 Lessons from the native boot ([11-native-macos.md](11-native-macos.md)) applied to the VM:
@@ -90,6 +93,18 @@ or `hackmon report` (installed on the same macOS, so it also runs in the VM).
 - Half the laptop for macOS (both domains, 2026-11-22): 4 vCPUs (`cores='2' threads='2'`) pinned to host
   cores 2-3 (CPUs 2,6,3,7; CPU n and n+4 are siblings), QEMU emulator threads on cores 0-1, 16 GiB RAM
   (was 6 unpinned vCPUs, 12 GiB). Defined domains backed up in `~/vm-xml-backup/` before `virsh define`.
+
+Measured 2026-11-22 (QEMU start to guest kernel / login window / ping), fresh overlay:
+
+| Layout and config | Kernel | Login | Ping (`gpu-mode` log) |
+|---|---|---|---|
+| 6 vCPU unpinned, 12 GiB, old config (trim -1, debug) | - | - | about 90 s |
+| 6 vCPU unpinned, 12 GiB, trim 0, no debug | 15 s | 69 s | 75 s |
+| 4 vCPU pinned, 16 GiB, trim 0, no debug (kept) | 5 s | 71 s | 95 s |
+
+Kernel to login is 54-66 s against 49 s native; about 30 s of it is the Bitdefender early-boot wait (also native).
+Half the CPUs costs about 20 s until the network is up, as expected for a parallel boot; kept on request so Linux
+keeps half the laptop.
 
 Next candidates, to test one at a time and measure (not done yet):
 1. (`iothread` is not possible: the disks are SATA, QEMU iothreads need virtio-blk/scsi.)

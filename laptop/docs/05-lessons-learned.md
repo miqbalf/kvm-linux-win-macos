@@ -119,3 +119,9 @@ Full write-up: [11-native-macos.md](11-native-macos.md).
 - `build-igpu-image.sh` builds the VM's OpenCore from `oc-build/EFI/OC/config.plist.binary-bak`, an old backup
   of the real config (`SetApfsTrimTimeout -1`). `make-vm-config.py` now always sets it to 0 and drops the debug
   boot-args and OpenCore logging unless `--debug`. Rebuild the image to get it (see 03-macos.md, "Speed").
+- **A native macOS boot silently breaks the VM's disk overlay.** After a day of native boots, the VM stopped in
+  OpenCore with "Halting on critical error" and only vCPU0 ever ran. It looked like a config or CPU-layout
+  regression (both were reverted first, with no effect); the real cause was `nvme1-overlay.qcow2` from the day
+  before, on top of a Samsung disk that native macOS had rewritten. A new overlay booted at once.
+  `gpu-mode mac` now fingerprints the APFS container and recreates a stale overlay itself
+  (`sudo gpu-mode new-overlay` by hand). Check the overlay first whenever the VM hangs early after a native boot.

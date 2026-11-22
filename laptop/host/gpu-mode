@@ -5,6 +5,7 @@
 #   sudo gpu-mode win      give the GTX 1650 to win10-gpu (Linux keeps the panel; view: looking-glass-client)
 #   sudo gpu-mode win-off  stop win10-gpu, GTX 1650 back to nvidia
 #   sudo gpu-mode status
+#   sudo gpu-mode new-overlay  discard the macOS VM disk overlay (done automatically by `mac` after a native boot)
 #   Apple menu > Shut Down in macOS also returns to the host (libvirt hook + watchdog).
 # Runs only on request. Nothing here is persistent: a reboot always returns to host mode.
 # In mac mode the host has no display (the panel is wired to the iGPU; the GTX 1650 only drives
@@ -29,6 +30,55 @@ restore_bl() {
   local b; b=$(cat /run/gpu-mode-brightness 2>/dev/null || echo 0)
   [ "${b:-0}" -gt 0 ] 2>/dev/null || b=$(( $(cat "$BL/max_brightness") * 6 / 10 ))
   for i in 1 2 3 4 5; do [ -w "$BL/brightness" ] && echo "$b" > "$BL/brightness" && break; sleep 1; done
+}
+# A native macOS boot rewrites the Samsung disk under nvme1-overlay.qcow2, and the VM then sees a mix of
+# old and new APFS blocks (2026-11-22: OpenCore "Halting on critical error", only vCPU0 running).
+# Fingerprint = the APFS container superblock (block 0) plus the checkpoint descriptor area of every
+# APFS partition; every native mount writes a new checkpoint there. The VM never writes the base disk.
+OVERLAY=/var/lib/libvirt/images/macos/nvme1-overlay.qcow2
+OVERLAY_FP=$OVERLAY.base-fp
+apfs_fp() {
+  local p
+  for p in $(lsblk -lnpo NAME,PARTTYPE /dev/hackintosh-disk | awk 'tolower($2)=="7c3457ef-0000-11aa-aa11-00306543ecac"{print $1}'); do
+    python3 -I - "$p" <<'PY' || return 1
+import hashlib, struct, sys
+with open(sys.argv[1], 'rb') as f:
+    sb = f.read(4096)
+    if sb[32:36] != b'NXSB':
+        sys.exit(1)
+    bs, = struct.unpack_from('<I', sb, 36)
+    blocks, = struct.unpack_from('<I', sb, 104)
+    base, = struct.unpack_from('<q', sb, 112)
+    h = hashlib.sha256(sb)
+    if not blocks & 0x80000000 and 0 < blocks <= 1024:
+        f.seek(base * bs)
+        h.update(f.read(blocks * bs))
+    print(sys.argv[1], h.hexdigest())
+PY
+  done | sha256sum | cut -c1-32
+}
+new_overlay() {
+  local fp
+  fp=$(apfs_fp) || die "cannot read the APFS container on /dev/hackintosh-disk"
+  rm -f "$OVERLAY"
+  qemu-img create -q -f qcow2 -b /dev/hackintosh-disk -F raw "$OVERLAY" || die "qemu-img create failed"
+  chown libvirt-qemu:libvirt-qemu "$OVERLAY"
+  echo "$fp" > "$OVERLAY_FP"
+  log "new overlay on /dev/hackintosh-disk (fingerprint $fp)"
+}
+# Recreate the overlay when the Hackintosh disk changed since it was made (= a native boot happened).
+check_overlay() {
+  local fp
+  fp=$(apfs_fp) || die "cannot read the APFS container on /dev/hackintosh-disk"
+  if [ ! -f "$OVERLAY" ]; then
+    new_overlay
+  elif [ ! -f "$OVERLAY_FP" ]; then
+    echo "$fp" > "$OVERLAY_FP"
+    log "overlay fingerprint recorded ($fp); if macOS was booted natively since the overlay was made, run: sudo gpu-mode new-overlay"
+  elif [ "$(cat "$OVERLAY_FP")" != "$fp" ]; then
+    log "Hackintosh disk changed since the overlay was made (native macOS boot): discarding the overlay"
+    new_overlay
+  fi
 }
 TP_UNIT=gpu-mode-touchpad
 TP_DEV=/dev/input/gpu-mode-touchpad
@@ -162,7 +212,8 @@ to_mac() {
   [ -f /var/lib/libvirt/images/macos/opencore-igpu.img ] || die "opencore-igpu.img missing"
   # NVMe numbering swaps between boots: the overlay must sit on the Samsung, never on the host disk.
   [ "$(lsblk -dno MODEL /dev/hackintosh-disk 2>/dev/null)" = "Samsung SSD 980 1TB" ] || die "/dev/hackintosh-disk is not the Samsung 980"
-  qemu-img info /var/lib/libvirt/images/macos/nvme1-overlay.qcow2 2>/dev/null | grep -q 'backing file: /dev/hackintosh-disk' || die "overlay is not backed by /dev/hackintosh-disk"
+  check_overlay
+  qemu-img info -U "$OVERLAY" 2>/dev/null | grep -q 'backing file: /dev/hackintosh-disk' || die "overlay is not backed by /dev/hackintosh-disk"
 
   save_bl
   log "stopping GDM (host desktop closes)"
@@ -231,5 +282,8 @@ case "${1:-status}" in
   win) to_win; status ;;
   win-off) to_win_off; status ;;
   status) status ;;
-  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status"; exit 2 ;;
+  new-overlay)
+    [ "$(state $VM)" = "shut off" ] && [ "$(state macos)" = "shut off" ] || die "shut down the macOS VMs first"
+    new_overlay ;;
+  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status|new-overlay"; exit 2 ;;
 esac
