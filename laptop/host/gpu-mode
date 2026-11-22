@@ -2,6 +2,7 @@
 # gpu-mode - switch the laptop's Intel iGPU (00:02.0) between the host and the macOS VM.
 #   sudo gpu-mode mac      stop GDM, bind iGPU to vfio-pci, start macos-igpu (macOS on the laptop panel)
 #   sudo gpu-mode mac --radios  also give macOS the Wi-Fi + Bluetooth (experimental; Linux keeps only a USB dongle)
+#   sudo gpu-mode mac --wifi    only the Wi-Fi
 #   sudo gpu-mode net-backup    copy the current Wi-Fi profile to a USB Wi-Fi dongle (Linux network in mac --radios)
 #   sudo gpu-mode host     stop macos-igpu, give the iGPU back to i915, start GDM
 #   sudo gpu-mode win      give the GTX 1650 to win10-gpu (Linux keeps the panel; view: looking-glass-client)
@@ -94,10 +95,12 @@ RADIO_USB="<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id
 set_radios() {   # $1 = on|off
   local x f; x=$(virsh dumpxml --inactive "$VM")
   for f in "$RADIO_PCI" "$RADIO_USB"; do
-    local has=0
+    local has=0 want=$1
+    # --wifi: Wi-Fi only, Bluetooth stays with Linux
+    [ "$1" = wifi ] && { case "$f" in *"bus='0x09'"*) want=on ;; *) want=off ;; esac; }
     case "$f" in *"bus='0x09'"*) grep -q "bus='0x09' slot='0x00'" <<<"$x" && has=1 ;; *) grep -q "product id='0x828f'" <<<"$x" && has=1 ;; esac
-    if [ "$1" = on ] && [ $has = 0 ]; then echo "$f" > /run/gpu-mode-dev.xml; virsh attach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "attach radio failed"
-    elif [ "$1" = off ] && [ $has = 1 ]; then echo "$f" > /run/gpu-mode-dev.xml; virsh detach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "detach radio failed"; fi
+    if [ "$want" = on ] && [ $has = 0 ]; then echo "$f" > /run/gpu-mode-dev.xml; virsh attach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "attach radio failed"
+    elif [ "$want" = off ] && [ $has = 1 ]; then echo "$f" > /run/gpu-mode-dev.xml; virsh detach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "detach radio failed"; fi
   done
   rm -f /run/gpu-mode-dev.xml
 }
@@ -258,9 +261,9 @@ to_mac() {
   # NVMe numbering swaps between boots: the overlay must sit on the Samsung, never on the host disk.
   [ "$(lsblk -dno MODEL /dev/hackintosh-disk 2>/dev/null)" = "Samsung SSD 980 1TB" ] || die "/dev/hackintosh-disk is not the Samsung 980"
   check_overlay
-  if [ "$RADIOS" = on ]; then
+  if [ "$RADIOS" != off ]; then
     lspci -s 09:00.0 -n | grep -q '14e4:43a0' || die "Wi-Fi 09:00.0 is not the BCM4360"
-    set_radios on
+    set_radios "$RADIOS"
     wifi_ifaces | grep -q '^dongle' || log "WARN: no USB Wi-Fi dongle: Linux has no network while macOS runs"
     log "Wi-Fi + Bluetooth go to macOS (experimental). Back: Apple menu > Shut Down"
   else
@@ -331,6 +334,7 @@ to_host() {
 
 RADIOS=off
 [ "${2:-}" = --radios ] && RADIOS=on
+[ "${2:-}" = --wifi ] && RADIOS=wifi
 case "${1:-status}" in
   mac) to_mac; status ;;
   host) to_host; status ;;
