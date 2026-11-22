@@ -1,13 +1,14 @@
 # OpenCore EFI: Acer Nitro 5 AN515-55 (native macOS)
 
-Working EFI of the laptop's native Hackintosh, copied from the boot EFI (`disk1s1`, Samsung SSD 980) on 2026-11-22.
+Working EFI of the laptop's native Hackintosh, copied from the boot EFI (Samsung SSD 980, partition UUID `8F8F67C9-…`) on 2026-11-22.
+Disk numbers (`disk0s1`/`disk1s1`) swap between boots on this laptop; mount the EFI by partition UUID, never by number.
 
 | | |
 |---|---|
 | Laptop | Acer Nitro 5 AN515-55: i5-10300H, UHD 630 (used), GTX 1650 Mobile (disabled), 32 GB RAM |
 | Disks | Samsung SSD 980 1TB (macOS), WD SN530 512GB (Linux), Seagate ST2000LM015 2TB HDD (data) |
 | macOS | 26.7.3 Tahoe (25G342), SMBIOS MacBookPro16,2 |
-| OpenCore | 1.0.7 RELEASE |
+| OpenCore | 1.0.8 RELEASE (2026-09-27) |
 | SIP | `csr-active-config` `03080000` (unsigned kexts allowed) |
 
 **Serials are removed.** Before booting, generate your own SMBIOS (MacBookPro16,2) with GenSMBIOS and fill in
@@ -22,6 +23,9 @@ an all-zero UUID and an all-zero ROM.
   (`-amfipassbeta`), `revpatch=sbvmm` (RestrictEvents) for updates. Realtek USB Wi-Fi kexts (`RtWlanU*`) are for
   a USB dongle.
 - Input: VoodooPS2 (keyboard) + VoodooI2C/HID (trackpad).
+- Fans + keyboard RGB: `NitroEC.kext` (patched NitroSense-macOS, see `laptop/macos/nitrosense/` and release
+  `nitrosense-an515-55-v1.1.0`), injected by OpenCore (`Kernel > Add`, MinKernel 20.0.0). Injecting from OpenCore
+  avoids the Auxiliary Kernel Collection, which lost the kext after a reboot.
 - NVMe: NVMeFix. **`Kernel > Quirks > SetApfsTrimTimeout = 0`** (see below).
 
 ## Changes on 2026-11-22 (boot speed and stability)
@@ -49,5 +53,20 @@ How to measure a boot (no verbose needed):
 /usr/bin/log show --last boot --style compact --predicate 'eventMessage CONTAINS "spaceman_scan_free_blocks" OR eventMessage CONTAINS "hello, launchd" OR eventMessage CONTAINS "Early boot timed out"'
 ```
 (`/usr/bin/log`, not `log`: zsh has a `log` builtin.)
+
+## OpenCore 1.0.8 update (2026-11-22, later)
+- OpenCore 1.0.7 to 1.0.8: `OpenCore.efi`, `BOOTx64.efi`, `OpenRuntime`, `OpenCanopy`, `AudioDxe`,
+  `ResetNvramEntry`; new key `UEFI > Drivers > HideVerbose`. `ocvalidate` 1.0.8: no issues.
+- AppleALC 1.9.8, AirportBrcmFixup 2.2.1.
+- Removed: `XHCI-unsupported`, `CPUFriend`, `CPUFriendDataProvider`, `CtlnaAHCIPort`, `ACPIMonitor`,
+  `SMCLightSensor`, `SSDT-FANT`, `SSDT-off-gpu` (`SSDT-NoHybGfx` already turns off the dGPU). Boot, USB, sleep
+  and the trackpad worked after removal.
+- Added `NitroEC.kext` (fans + RGB).
+
+Measured result (unified log, same laptop): boot to login about 101 s before, about 49 s after; dyld shared cache
+to `hello, launchd` 34 s before, 0.9 s after; no APFS boot trim. About 30 s of the rest is Bitdefender's ES wait.
+
+Backups on the laptop: `DATA_2TB/Hackintosh/EFI_20261122_trimfix_oc107` (before 1.0.8),
+`DATA_2TB/Hackintosh/EFI_20261122_oc108` (before NitroEC).
 
 Backup of the EFI before these changes: `DATA_2TB/Hackintosh/EFI_20261122_current_backup` on the laptop.
