@@ -76,7 +76,8 @@ with the setup script. Booting the Hackintosh natively invalidates `nvme1-overla
 ## Speed: making the VM boot like the native OpenCore boot (2026-11-22)
 Lessons from the native boot ([11-native-macos.md](11-native-macos.md)) applied to the VM:
 
-Done in the repo (needs an image rebuild: `sudo bash laptop/vm/macos/build-igpu-image.sh`):
+Done in the repo. Apply to the existing image (only `config.plist` changes, GOP stays):
+`sudo bash laptop/vm/macos/update-igpu-config.sh` (or a full `build-igpu-image.sh` rebuild):
 - `SetApfsTrimTimeout = 0` (the input config is an old backup with -1: about 50 s of trim on every boot).
 - No debug boot-args (`-v keepsyms=1 debug=0x100`) and no OpenCore logging unless `--debug`.
 
