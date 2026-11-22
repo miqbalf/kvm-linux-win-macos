@@ -22,4 +22,4 @@ It reads the unified log once per run (about 35 s). Known harmless lines are fil
 Apple's missing `AppleKIS`, PPP/L2TP/PPTP and `IOVersatile` load failures, an IGPU info line.
 
 Baseline 2026-11-22 (OpenCore 1.0.8, trim 0): dyld +1 s, launchd +2 s, Data +3 s, ES +35 s, login +49 s;
-4 `AppleNVMe Assert failed` lines at boot (seen on every boot, no effect so far).
+4 `AppleNVMe Assert failed` lines at boot (also on the previous boot; no effect so far).
