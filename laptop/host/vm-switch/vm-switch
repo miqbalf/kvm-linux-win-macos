@@ -58,6 +58,7 @@ def read_state():
     except (OSError, subprocess.TimeoutExpired):
         pass
     s["apps"] = app_windows_open()
+    s["net"] = read_net()
     s["lg"] = subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "looking-glass-client"],
                              capture_output=True).returncode == 0
     try:
@@ -66,6 +67,31 @@ def read_state():
     except (OSError, subprocess.TimeoutExpired):
         pass
     return s
+
+
+def read_net():
+    """Wi-Fi devices: [{kind: internal|dongle, dev, state, conn, ip}]. Internal = BCM4360 at 09:00.0."""
+    out = []
+    try:
+        lines = subprocess.run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device"],
+                               capture_output=True, text=True, timeout=5).stdout.splitlines()
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    for l in lines:
+        f = l.replace("\\:", "\x00").split(":")
+        if len(f) < 4 or f[1] != "wifi":
+            continue
+        dev, state, conn = f[0], f[2], f[3].replace("\x00", ":")
+        path = os.path.realpath(f"/sys/class/net/{dev}/device")
+        ip = ""
+        try:
+            a = subprocess.run(["ip", "-4", "-br", "addr", "show", "dev", dev], capture_output=True, text=True).stdout.split()
+            ip = a[2].split("/")[0] if len(a) > 2 else ""
+        except OSError:
+            pass
+        out.append({"kind": "internal" if "0000:09:00.0" in path else "dongle", "dev": dev,
+                    "state": state, "conn": conn, "ip": ip})
+    return out
 
 
 def winapps_entries():
@@ -187,6 +213,25 @@ class Win(Adw.ApplicationWindow):
         self.mac = OsCard("video-display-symbolic", "macOS")
         box.append(self.win)
         box.append(self.mac)
+        # Opt-in: the Apple Wi-Fi + Bluetooth go to macOS (Continuity, Universal Control). Experimental.
+        rb = Gtk.Box(spacing=10, margin_top=2)
+        rl = Gtk.Label(xalign=0, hexpand=True, wrap=True,
+                       label="Also give macOS the Wi-Fi and Bluetooth (Universal Control, AirDrop). Experimental. "
+                             "Linux then keeps only the USB dongle.")
+        rl.add_css_class("dim-label")
+        self.radios = Gtk.Switch(valign=Gtk.Align.CENTER)
+        rb.append(rl)
+        rb.append(self.radios)
+        self.mac.append(rb)
+
+        self.netgrp = Adw.PreferencesGroup(title="Network",
+                                           description="Linux needs the USB dongle to stay online while macOS has the Wi-Fi.")
+        ws = Gtk.Button(label="Wi-Fi settings", valign=Gtk.Align.CENTER)
+        ws.add_css_class("flat")
+        ws.connect("clicked", lambda *a: self.launch(["gnome-control-center", "wifi"], "GNOME Settings is not installed"))
+        self.netgrp.set_header_suffix(ws)
+        box.append(self.netgrp)
+        self.netrows = []
 
         self.synced = False      # winapps-sync ran for this Windows boot
 
@@ -304,8 +349,42 @@ class Win(Adw.ApplicationWindow):
             act.set_sensitive(not p and not busy and (on or not conflict))
             row.set_subtitle(row.get_subtitle().split(" — ")[0] + (" — VNC 127.0.0.1:%d" % VNC[vm] if on else ""))
 
+        self.render_net(s.get("net", []))
         self.log.set_label(s["log"] or "No switches yet.")
         return False
+
+    def render_net(self, net):
+        for r in self.netrows:
+            self.netgrp.remove(r)
+        self.netrows = []
+        if not any(n["kind"] == "internal" for n in net):
+            net = [{"kind": "internal", "dev": "", "state": "with macOS" if "macos-igpu" in self.state["running"]
+                    else "missing", "conn": "", "ip": ""}] + net
+        if not any(n["kind"] == "dongle" for n in net):
+            net = net + [{"kind": "dongle", "dev": "", "state": "not plugged in", "conn": "", "ip": ""}]
+        for n in net:
+            title = "Built-in Wi-Fi (Apple BCM4360)" if n["kind"] == "internal" else "USB Wi-Fi dongle"
+            on = n["state"] == "connected"
+            sub = (f"{n['conn']} · {n['ip']}" if on else n["state"]) + (f" · {n['dev']}" if n["dev"] else "")
+            row = Adw.ActionRow(title=title, subtitle=sub)
+            row.add_prefix(Gtk.Image.new_from_icon_name(
+                "network-wireless-signal-excellent-symbolic" if on else "network-wireless-offline-symbolic"))
+            pill = Gtk.Label(label="Online" if on else "Offline", valign=Gtk.Align.CENTER)
+            pill.add_css_class("pill")
+            pill.add_css_class("on" if on else "off")
+            row.add_suffix(pill)
+            if n["kind"] == "dongle" and n["dev"] and not on:
+                b = Gtk.Button(label="Connect as backup", valign=Gtk.Align.CENTER)
+                b.add_css_class("suggested-action")
+                b.connect("clicked", lambda *a: self.run(["pkexec", GPU_MODE, "net-backup"], "net", "Connecting",
+                                                         "Dongle connected: Linux stays online in macOS mode",
+                                                         "Dongle did not connect"))
+                row.add_suffix(b)
+            self.netgrp.add(row)
+            self.netrows.append(row)
+
+    def dongle_online(self):
+        return any(n["kind"] == "dongle" and n["state"] == "connected" for n in (self.state or {}).get("net", []))
 
     # ---------- actions ----------
     def toast(self, text):
@@ -409,13 +488,19 @@ class Win(Adw.ApplicationWindow):
                                    "Windows is off, the GTX is back on Linux", "Shut down failed")))
 
     def mac_start(self):
+        radios = self.radios.get_active()
+        extra = ""
+        if radios:
+            extra = ("\n\nWi-Fi and Bluetooth go to macOS (experimental: the last try hung at the Apple logo). " +
+                     ("Linux stays online through the USB dongle." if self.dongle_online() else
+                      "The USB dongle is NOT online: Linux will have no network until macOS shuts down."))
         self.ask("Switch the laptop screen to macOS?",
                  "The Linux desktop closes and all open Linux apps end: save your work first.\n\n"
                  "macOS appears after about 1–1.5 minutes. To come back: Apple menu > Shut Down "
-                 "(Linux returns by itself). If nothing responds, hold the power button.",
+                 "(Linux returns by itself). If nothing responds, hold the power button." + extra,
                  "Switch to macOS", Adw.ResponseAppearance.SUGGESTED,
-                 lambda: self.run(["pkexec", GPU_MODE, "mac-bg"], "macos-igpu", "Switching",
-                                  "Switching to macOS…", "Switch failed"))
+                 lambda: self.run(["pkexec", GPU_MODE, "mac-bg"] + (["--radios"] if radios else []), "macos-igpu",
+                                  "Switching", "Switching to macOS…", "Switch failed"))
 
     def mac_stop(self):
         self.ask("Force back to Linux?", "macOS is powered off after 30 s. Unsaved macOS work is lost.",

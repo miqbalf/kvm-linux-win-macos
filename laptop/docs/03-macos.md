@@ -125,8 +125,11 @@ takes them from `wl`/`btusb` at start and returns them at shutdown. The VM OpenC
 AirportBrcmFixup and its injectors and adds `brcmfx-wowl=0`, as on the native boot (the OCLP Wi-Fi root patch
 is on the shared disk).
 
-- Linux has no network while macOS runs (`wlan0` is its only link; Ethernet is unplugged). Run the switch as
-  `sudo gpu-mode mac-bg` over SSH (own systemd unit, survives the SSH drop). macOS joins the LAN over Wi-Fi
-  (same MAC as Linux, so normally the same DHCP address).
-- `sudo gpu-mode mac --keep-wifi` leaves both radios with Linux (needed for headless Linux RDP over Wi-Fi).
+- Opt-in, experimental: `sudo gpu-mode mac-bg --radios` (or the switch on the macOS card in VM Switch).
+  The first try (2026-11-22) hung at the Apple logo; without `--radios` both radios stay with Linux.
+- Linux has no network while macOS has the radios (`wlan0` is its only link; Ethernet is unplugged). A USB
+  Wi-Fi dongle (TP-Link TL-WN823N, `rtl8xxxu`) keeps Linux online: `sudo gpu-mode net-backup` copies the
+  current Wi-Fi profile to it (route metric 700, so the built-in card stays preferred). VM Switch shows both
+  cards in its Network section, with a "Connect as backup" button.
+- Run the switch as `mac-bg` over SSH (own systemd unit, survives an SSH drop).
 - Back to Linux: Apple menu > Shut Down in macOS (or `osascript -e 'tell app "System Events" to shut down'`).

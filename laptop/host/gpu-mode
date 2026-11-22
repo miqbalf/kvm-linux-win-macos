@@ -1,7 +1,8 @@
 #!/bin/bash
 # gpu-mode - switch the laptop's Intel iGPU (00:02.0) between the host and the macOS VM.
 #   sudo gpu-mode mac      stop GDM, bind iGPU to vfio-pci, start macos-igpu (macOS on the laptop panel)
-#                          with the Wi-Fi + Bluetooth (Linux loses its network); add --keep-wifi to keep them on Linux
+#   sudo gpu-mode mac --radios  also give macOS the Wi-Fi + Bluetooth (experimental; Linux keeps only a USB dongle)
+#   sudo gpu-mode net-backup    copy the current Wi-Fi profile to a USB Wi-Fi dongle (Linux network in mac --radios)
 #   sudo gpu-mode host     stop macos-igpu, give the iGPU back to i915, start GDM
 #   sudo gpu-mode win      give the GTX 1650 to win10-gpu (Linux keeps the panel; view: looking-glass-client)
 #   sudo gpu-mode win-off  stop win10-gpu, GTX 1650 back to nvidia
@@ -86,7 +87,8 @@ check_overlay() {
 # Apple BCM4360 Wi-Fi (PCI 09:00.0, own IOMMU group) and Apple Bluetooth (USB 05ac:828f) for macOS,
 # so Continuity / Universal Control work. libvirt (managed='yes') takes them from wl/btusb at start and gives
 # them back at shutdown. Linux has no network while macOS runs (wlan0 is its only link, Ethernet unplugged).
-# `gpu-mode mac --keep-wifi` leaves both with Linux. Added to/removed from the persistent domain before start.
+# Opt-in: `gpu-mode mac --radios` (2026-11-22: macOS hung at the Apple logo with them, still being debugged).
+# Without the flag both stay with Linux. Added to/removed from the persistent domain before start.
 RADIO_PCI="<hostdev mode='subsystem' type='pci' managed='yes'><source><address domain='0x0000' bus='0x09' slot='0x00' function='0x0'/></source><address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/></hostdev>"
 RADIO_USB="<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id='0x05ac'/><product id='0x828f'/></source></hostdev>"
 set_radios() {   # $1 = on|off
@@ -98,6 +100,30 @@ set_radios() {   # $1 = on|off
     elif [ "$1" = off ] && [ $has = 1 ]; then echo "$f" > /run/gpu-mode-dev.xml; virsh detach-device "$VM" /run/gpu-mode-dev.xml --config >/dev/null || die "detach radio failed"; fi
   done
   rm -f /run/gpu-mode-dev.xml
+}
+# Wi-Fi interfaces: the internal BCM4360 (09:00.0) and any other (USB dongle).
+wifi_ifaces() {  # prints "internal|dongle name"
+  local d
+  for d in /sys/class/net/*; do
+    [ -d "$d/wireless" ] || [ -d "$d/phy80211" ] || continue
+    case "$(readlink -f "$d/device")" in *0000:09:00.0*) echo "internal ${d##*/}" ;; *) echo "dongle ${d##*/}" ;; esac
+  done
+}
+net_backup() {
+  local int dongle prof new
+  int=$(wifi_ifaces | awk '$1=="internal"{print $2; exit}')
+  dongle=$(wifi_ifaces | awk '$1=="dongle"{print $2; exit}')
+  [ -n "$dongle" ] || die "no USB Wi-Fi dongle found: plug it in first"
+  [ -n "$int" ] || die "internal Wi-Fi not found (is it with macOS?)"
+  prof=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v d="$int" '$NF==d{sub(":" d "$", ""); print; exit}')
+  [ -n "$prof" ] || die "internal Wi-Fi ($int) is not connected: connect it first"
+  new="$prof (dongle)"
+  nmcli -t -f NAME connection show | grep -qxF "$new" || nmcli connection clone "$prof" "$new" >/dev/null || die "clone failed"
+  nmcli connection modify "$new" connection.interface-name "$dongle" connection.autoconnect yes \
+    802-11-wireless.mac-address "" ipv4.route-metric 700 ipv6.route-metric 700 || die "modify failed"
+  nmcli connection modify "$prof" connection.interface-name "$int" || true
+  nmcli connection up "$new" ifname "$dongle" >/dev/null || die "the dongle did not connect to $prof"
+  log "backup network: $dongle on $prof ($(ip -4 -br addr show dev "$dongle" | awk '{print $3}'))"
 }
 TP_UNIT=gpu-mode-touchpad
 TP_DEV=/dev/input/gpu-mode-touchpad
@@ -235,7 +261,8 @@ to_mac() {
   if [ "$RADIOS" = on ]; then
     lspci -s 09:00.0 -n | grep -q '14e4:43a0' || die "Wi-Fi 09:00.0 is not the BCM4360"
     set_radios on
-    log "Wi-Fi + Bluetooth go to macOS: SSH to Linux drops now; reach macOS over Wi-Fi (same LAN). Back: Apple menu > Shut Down"
+    wifi_ifaces | grep -q '^dongle' || log "WARN: no USB Wi-Fi dongle: Linux has no network while macOS runs"
+    log "Wi-Fi + Bluetooth go to macOS (experimental). Back: Apple menu > Shut Down"
   else
     set_radios off
   fi
@@ -302,16 +329,17 @@ to_host() {
   to_host_hw
 }
 
-RADIOS=on
-[ "${2:-}" = --keep-wifi ] && RADIOS=off
+RADIOS=off
+[ "${2:-}" = --radios ] && RADIOS=on
 case "${1:-status}" in
   mac) to_mac; status ;;
   host) to_host; status ;;
   win) to_win; status ;;
   win-off) to_win_off; status ;;
   status) status ;;
+  net-backup) net_backup ;;
   new-overlay)
     [ "$(state $VM)" = "shut off" ] && [ "$(state macos)" = "shut off" ] || die "shut down the macOS VMs first"
     new_overlay ;;
-  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status|new-overlay"; exit 2 ;;
+  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status|new-overlay|net-backup  (mac/mac-bg [--radios])"; exit 2 ;;
 esac
