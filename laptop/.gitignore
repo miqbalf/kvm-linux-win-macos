@@ -2,10 +2,15 @@
 # The OpenCore copy and image contain SMBIOS serials (repo rule: never commit serials).
 vm/macos/oc-build/
 vm/macos/opencore-lt.img
+hackintosh/efi-backup/
+hackintosh/work/
+hackintosh/out/
 *.bak
 *.img
 *.img.bak
 *.binary-bak
 *.efi
 *.rom
+*.aml
 __pycache__/
+*.pyc

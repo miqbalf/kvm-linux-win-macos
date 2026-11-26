@@ -54,6 +54,7 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | [docs/10-fingerprint.md](docs/10-fingerprint.md) | USB fingerprint reader (MAFP 3274:8012): community driver, install, enroll |
 | [docs/08-share-keyboard-mouse.md](docs/08-share-keyboard-mouse.md) | Use a Mac's keyboard and mouse on the laptop (Deskflow) |
 | [docs/11-native-macos.md](docs/11-native-macos.md) | Native macOS boot (OpenCore EFI): boot-speed and stability fixes, audit, monitoring, CachyOS in VMware |
+| [hackintosh/README.md](hackintosh/README.md) | Bare-metal Hackintosh (`macOS Tahoe`) GTX 1650 NullMoth Optimus offload, `NitroGPU.app`, Auto-HDMI, RTD3 SSDT & ESP backup |
 
 ## Files
 | Path | What |
@@ -72,6 +73,7 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | `vm/macos/` | macOS domains, OpenCore config generator, Intel GOP image build |
 | `vm/windows/` | Windows domains, fake battery SSDT |
 | `macos/` | tools for the native macOS boot: NitroSense, monthly trim, hackmon, sleepmon, CachyOS VM ([macos/README.md](macos/README.md)) |
+| `hackintosh/` | NullMoth GTX 1650 Optimus offload patches (`patches/`), `NitroGPU.app`, Auto-HDMI (`nitro-gpu-ctl`), RTD3 `NXOF`/`NXO_` ACPI builder, ESP backup & EFI scripts ([hackintosh/README.md](hackintosh/README.md)) |
 | `../Hackintosh_EFI/ACER_NITRO_5_AN_515_55/` | the native boot's OpenCore EFI (serials redacted) |
 | `host/attic-kimi/` | old scripts that blacked out the laptop. Reference only, never run |
 

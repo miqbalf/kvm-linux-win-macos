@@ -1,0 +1,87 @@
+diff --git a/kexts/NVRM/nv_rtd3.cpp b/kexts/NVRM/nv_rtd3.cpp
+index 652a629..8db195d 100644
+--- a/kexts/NVRM/nv_rtd3.cpp
++++ b/kexts/NVRM/nv_rtd3.cpp
+@@ -19,17 +19,48 @@
+ 
+ static struct nv_rtd3 g_rtd3;
+ static char g_res[96];
++static char g_off_method[8];
++static char g_on_method[8];
+ static int g_init;
+ 
++static int valid_acpi_seg(const char *m)
++{
++    size_t l = strlen(m);
++    return l >= 1 && l <= 4 && !strchr(m, '.');
++}
++
++/* Convert "\_SB.PCI0.PEG0" into "IOACPIPlane:/_SB/PCI0/PEG0" to look up an IOACPIPlatformDevice directly. */
++static IOACPIPlatformDevice *find_acpi_target(const char *path)
++{
++    if (!path || path[0] != '\\') return nullptr;
++    char iopath[144] = "IOACPIPlane:/";
++    size_t j = strlen(iopath);
++    for (size_t i = 1; path[i] && j + 1 < sizeof iopath; i++)
++        iopath[j++] = (path[i] == '.') ? '/' : path[i];
++    iopath[j] = 0;
++    IORegistryEntry *e = IORegistryEntry::fromPath(iopath);
++    IOACPIPlatformDevice *dev = OSDynamicCast(IOACPIPlatformDevice, e);
++    if (!dev && e) e->release();
++    return dev;
++}
++
+ static void nv_rtd3_init(void)
+ {
+     if (g_init) return;
+     g_init = 1;
+     uint32_t v = 0;
+     g_rtd3.enabled = PE_parse_boot_argn("nvrtd3", &v, sizeof v) && v == 1;
+-    g_rtd3.have_resource = PE_parse_boot_argn("nvrtd3res", g_res, sizeof g_res) && g_res[0] == '\\';
++    bool got_res = PE_parse_boot_argn("nvrtd3res", g_res, sizeof g_res) && g_res[0] == '\\';
++    if (!got_res) g_res[0] = 0;
++    if (!PE_parse_boot_argn("nvrtd3off", g_off_method, sizeof g_off_method) || !valid_acpi_seg(g_off_method)) g_off_method[0] = 0;
++    if (!PE_parse_boot_argn("nvrtd3on", g_on_method, sizeof g_on_method) || !valid_acpi_seg(g_on_method)) g_on_method[0] = 0;
++    g_rtd3.have_resource = got_res || (g_off_method[0] && g_on_method[0]);
+     if (g_rtd3.enabled)
+-        kprintf("NVRM-xnu: RTD3 %s%s\n", g_rtd3.have_resource ? "resource " : "needs nvrtd3res=<ACPI path> to act", g_rtd3.have_resource ? g_res : "");
++        kprintf("NVRM-xnu: RTD3 %s%s (methods %s/%s)\n",
++                g_rtd3.have_resource ? (got_res ? "resource " : "acpi node ") : "needs nvrtd3res=<ACPI path> or nvrtd3off/nvrtd3on to act",
++                got_res ? g_res : "",
++                g_off_method[0] ? g_off_method : "_OFF",
++                g_on_method[0] ? g_on_method : "_ON");
+ }
+ 
+ static bool evalMethod(IOACPIPlatformDevice *acpi, const char *method)
+@@ -37,12 +68,27 @@ static bool evalMethod(IOACPIPlatformDevice *acpi, const char *method)
+     // The firmware's power-resource methods are called only with nvrtd3=1 on the boot line, read here as well as by the
+     // policy above: a method of this kind behaves differently on every board.
+     { uint32_t on = 0; if (!PE_parse_boot_argn("nvrtd3", &on, sizeof on) || on != 1) return false; }
+-    char name[128];
+-    snprintf(name, sizeof name, "%s.%s", g_res, method);
++    const char *custom = (!strcmp(method, "_OFF") && g_off_method[0]) ? g_off_method
++                       : (!strcmp(method, "_ON") && g_on_method[0]) ? g_on_method : nullptr;
++    const char *seg = custom ? custom : method;
+     OSObject *o = nullptr;
+-    IOReturn r = acpi->evaluateObject(name, &o);
++    IOReturn r = kIOReturnBadArgument;
++    // AppleACPIPlatformExpert::evaluateObject rejects names > 4 chars (0xe00002c2). Prefer evaluating a 4-char
++    // method directly on a resolved IOACPIPlatformDevice target or the GPU's own ACPI ancestor.
++    if (IOACPIPlatformDevice *target = find_acpi_target(g_res)) {
++        r = target->evaluateObject(seg, &o);
++        kprintf("NVRM-xnu: RTD3 %s.%s (direct) -> 0x%x\n", g_res, seg, r);
++        target->release();
++    } else if (custom) {
++        r = acpi->evaluateObject(seg, &o);
++        kprintf("NVRM-xnu: RTD3 %s (on %s) -> 0x%x\n", seg, acpi->getName(), r);
++    } else {
++        char name[128];
++        snprintf(name, sizeof name, "%s.%s", g_res, seg);
++        r = acpi->evaluateObject(name, &o);
++        kprintf("NVRM-xnu: RTD3 %s -> 0x%x\n", name, r);
++    }
+     OSSafeReleaseNULL(o);
+-    kprintf("NVRM-xnu: RTD3 %s -> 0x%x\n", name, r);
+     return r == kIOReturnSuccess;
+ }
+ 
