@@ -49,19 +49,79 @@ arm_hdmi() {
 }
 
 activate_hdmi() {
+    local force=0 flip=0 arg
+    for arg in "$@"; do
+        case "$arg" in
+            --force) force=1 ;;
+            --flip) flip=1 ;;
+            *)
+                echo "Usage: nitro-gpu-ctl activate-hdmi [--force] [--flip]" >&2
+                return 2
+                ;;
+        esac
+    done
     arm_hdmi
-    local heads
+    local heads prev_flip need_restart=0
     heads="$(sysctl -n debug.nvaccel_heads_published 2>/dev/null || echo 0)"
     if [[ "${heads:-0}" == "0" ]]; then
         echo "Cannot activate HDMI display: no monitor detected yet (heads=0)."
         return 1
     fi
-    if ioreg -r -c NVRMNVDAFramebuffer -l -w0 2>/dev/null | grep -q '"IOUserClientCreator".*WindowServer'; then
-        echo "WindowServer already attached to NVRMFramebuffer."
+    if [[ "$flip" -eq 1 ]]; then
+        prev_flip="$(sysctl -n debug.nvaccel_iop_flip 2>/dev/null || echo 0)"
+        sysctl -w debug.nvaccel_iop_async=1 >/dev/null || true
+        sysctl -w debug.nvaccel_iop_flip=1 >/dev/null
+        echo "Enabled HDMI zero-copy scanout flip: iop_flip=$(sysctl -n debug.nvaccel_iop_flip 2>/dev/null || echo 0), async=$(sysctl -n debug.nvaccel_iop_async 2>/dev/null || echo 0)"
+        [[ "${prev_flip:-0}" == "0" ]] && need_restart=1
+    fi
+    if [[ "$force" -eq 0 && "$need_restart" -eq 0 ]] && ioreg -r -c NVRMNVDAFramebuffer -l -w0 2>/dev/null | grep -q '"IOUserClientCreator".*WindowServer'; then
+        echo "WindowServer already attached to NVRMFramebuffer (pass --force to reload bundle)."
         return 0
     fi
     echo "Restarting WindowServer so macOS attaches to the hot-plugged HDMI display..."
     launchctl kickstart -k system/com.apple.WindowServer || killall -9 WindowServer
+}
+
+hdmi_flip() {
+    local state="${1:-}" restart=0 opt
+    shift || true
+    for opt in "$@"; do
+        case "$opt" in
+            --restart) restart=1 ;;
+            *)
+                echo "Usage: nitro-gpu-ctl hdmi-flip <on|off> [--restart]" >&2
+                return 2
+                ;;
+        esac
+    done
+    case "$state" in
+        on)
+            local heads armed
+            heads="$(sysctl -n debug.nvaccel_heads_published 2>/dev/null || echo 0)"
+            armed="$(sysctl -n debug.nvaccelfb 2>/dev/null || echo 0)"
+            if [[ "${heads:-0}" == "0" || "${armed:-0}" == "0" ]]; then
+                echo "Cannot enable zero-copy flip: HDMI head not armed yet (heads=${heads}, nvaccelfb=${armed})." >&2
+                return 1
+            fi
+            sysctl -w debug.nvaccel_iop_async=1 >/dev/null || true
+            sysctl -w debug.nvaccel_iop_flip=1 >/dev/null
+            echo "Enabled HDMI zero-copy scanout flip: iop_flip=$(sysctl -n debug.nvaccel_iop_flip 2>/dev/null || echo 0), async=$(sysctl -n debug.nvaccel_iop_async 2>/dev/null || echo 0)"
+            ;;
+        off)
+            sysctl -w debug.nvaccel_iop_flip=0 >/dev/null
+            echo "Disabled HDMI zero-copy flip (safe copy path active): iop_flip=$(sysctl -n debug.nvaccel_iop_flip 2>/dev/null || echo 0)"
+            ;;
+        *)
+            echo "Usage: nitro-gpu-ctl hdmi-flip <on|off> [--restart]" >&2
+            return 2
+            ;;
+    esac
+    if [[ "$restart" -eq 1 ]]; then
+        echo "Restarting WindowServer to apply buffer sharing mode for iop_flip=$(sysctl -n debug.nvaccel_iop_flip 2>/dev/null || echo 0)..."
+        launchctl kickstart -k system/com.apple.WindowServer || killall -9 WindowServer
+    elif ioreg -r -c NVRMNVDAFramebuffer -l -w0 2>/dev/null | grep -q '"IOUserClientCreator".*WindowServer'; then
+        echo "Note: WindowServer is already attached; pass --restart (or run 'nitro-gpu-ctl activate-hdmi --force') to apply shared-VRAM mode."
+    fi
 }
 
 set_mode() {
@@ -130,8 +190,8 @@ show_status() {
     if [[ "$bootargs" =~ nvfbhotplugpoll=([0-9]+) ]]; then
         poll="${BASH_REMATCH[1]}"
     fi
-    printf 'mode=%s\nheadless=%s\nnvaccelfb=%s\nheads=%s\nhotplug_poll=%s\n' \
-        "$mode" "$headless" "$nvaccelfb" "$heads" "$poll"
+    printf 'mode=%s\nheadless=%s\nnvaccelfb=%s\nheads=%s\nhotplug_poll=%s\niop_flip=%s\n' \
+        "$mode" "$headless" "$nvaccelfb" "$heads" "$poll" "$(sysctl -n debug.nvaccel_iop_flip 2>/dev/null || echo 0)"
 }
 
 cmd="${1:-status}"
@@ -142,10 +202,18 @@ case "$cmd" in
         set_mode "$2"
         ;;
     arm-hdmi) arm_hdmi ;;
-    activate-hdmi) activate_hdmi ;;
+    activate-hdmi)
+        shift
+        activate_hdmi "$@"
+        ;;
+    hdmi-flip)
+        [[ $# -ge 2 ]] || { echo "Usage: nitro-gpu-ctl hdmi-flip <on|off> [--restart]" >&2; exit 2; }
+        shift
+        hdmi_flip "$@"
+        ;;
     watch-hdmi) watch_hdmi ;;
     *)
-        echo "Usage: nitro-gpu-ctl <status | set <apple|nvidia|igpu> | arm-hdmi | activate-hdmi | watch-hdmi>" >&2
+        echo "Usage: nitro-gpu-ctl <status | set <apple|nvidia|igpu> | arm-hdmi | activate-hdmi [--force] [--flip] | hdmi-flip <on|off> [--restart] | watch-hdmi>" >&2
         exit 2
         ;;
 esac

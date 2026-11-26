@@ -15,6 +15,8 @@ ENABLE_RTD3=0
 NO_FLIP=1
 DEBUG_BOOT=1
 AUTO_HDMI=1
+NO_NVMEFIX=0
+NVME_SAFE=0
 MOUNTED_BY_US=0
 MOUNT_POINT="/tmp/oc-usb-efi-$$"
 SUDO_KEEPALIVE_PID=""
@@ -35,7 +37,9 @@ Options:
   --noflip           Keep -nvrmnoflip boot-arg (default; safer on 256 MB BAR1 without ReBAR)
   --allow-flip       Allow zero-copy scanout flips (omit -nvrmnoflip)
   --no-auto-hdmi     Omit nvfbhotplugpoll=2 nvagdcheads=1 (disables HDMI hotplug polling)
-  --no-debug         Omit -v debug=0x100 keepsyms=1 swd_panic=1 verbose boot flags
+  --no-debug         Omit -v debug=0x100 keepsyms=1 swd_panic=1 and force quiet Misc.Debug (Target=0)
+  --no-nvmefix       Add -nvmefoff boot-arg to disable NVMeFix.kext (workaround for NVMe MMIO drops)
+  --nvme-safe        Apply --no-nvmefix plus disable ASPM/APST on RP09 NVMe (PciRoot(0x0)/Pci(0x1D,0x0))
   -h, --help         Show help
 EOF
 }
@@ -62,6 +66,8 @@ while [[ $# -gt 0 ]]; do
         --allow-flip) NO_FLIP=0; shift ;;
         --no-auto-hdmi) AUTO_HDMI=0; shift ;;
         --no-debug) DEBUG_BOOT=0; shift ;;
+        --no-nvmefix) NO_NVMEFIX=1; shift ;;
+        --nvme-safe) NO_NVMEFIX=1; NVME_SAFE=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
     esac
@@ -142,7 +148,7 @@ if [[ "$ENABLE_RTD3" -eq 1 ]]; then
 fi
 
 echo "==> Patching $DEST_ROOT/EFI/OC/config.plist for NullMoth Optimus test..."
-python3 - "$DEST_ROOT/EFI/OC/config.plist" "$ENABLE_RTD3" "$NO_FLIP" "$DEBUG_BOOT" "$AUTO_HDMI" <<'PY'
+python3 - "$DEST_ROOT/EFI/OC/config.plist" "$ENABLE_RTD3" "$NO_FLIP" "$DEBUG_BOOT" "$AUTO_HDMI" "$NO_NVMEFIX" "$NVME_SAFE" <<'PY'
 import plistlib
 import sys
 from pathlib import Path
@@ -152,6 +158,8 @@ enable_rtd3 = bool(int(sys.argv[2]))
 no_flip = bool(int(sys.argv[3]))
 debug_boot = bool(int(sys.argv[4]))
 auto_hdmi = bool(int(sys.argv[5]))
+no_nvmefix = bool(int(sys.argv[6]))
+nvme_safe = bool(int(sys.argv[7]))
 
 with plist_path.open("rb") as f:
     cfg = plistlib.load(f)
@@ -188,6 +196,7 @@ strip_exact = {
     "-wegnoegpu",
     "-nvkmsnosmooth",
     "-nvrmnoflip",
+    "-nvmefoff",
     "-v",
     "keepsyms=1",
     "swd_panic=1",
@@ -236,8 +245,38 @@ if auto_hdmi:
     kept.extend(["nvfbhotplugpoll=2", "nvagdcheads=1", "nvrmsettle=10000"])
 if enable_rtd3:
     kept.extend(["nvrtd3=1", "nvrtd3off=NXOF", "nvrtd3on=NXO_"])
+if no_nvmefix:
+    kept.append("-nvmefoff")
 
 nvram_add["boot-args"] = " ".join(kept)
+
+# 4. When --no-debug is set, also keep Misc.Debug quiet (Target=0) so OpenCore adds zero log overhead
+if not debug_boot:
+    misc_dbg = cfg.setdefault("Misc", {}).setdefault("Debug", {})
+    misc_dbg["AppleDebug"] = False
+    misc_dbg["ApplePanic"] = True
+    misc_dbg["DisableWatchDog"] = True
+    misc_dbg["DisplayDelay"] = 0
+    misc_dbg["DisplayLevel"] = 0
+    misc_dbg["SysReport"] = False
+    misc_dbg["Target"] = 0
+
+# 5. Optional NVMe ASPM/APST safety overrides for Samsung SSD 980 on RP09@1d,0
+dp_add = cfg.setdefault("DeviceProperties", {}).setdefault("Add", {})
+rp09_path = "PciRoot(0x0)/Pci(0x1D,0x0)"
+nvme_path = "PciRoot(0x0)/Pci(0x1D,0x0)/Pci(0x0,0x0)"
+if nvme_safe:
+    dp_add.setdefault(rp09_path, {})["pci-aspm-default"] = b"\x00\x00\x00\x00"
+    nvme_props = dp_add.setdefault(nvme_path, {})
+    nvme_props["pci-aspm-default"] = b"\x00\x00\x00\x00"
+    nvme_props["ps-max-latency-us"] = b"\x00\x00\x00\x00\x00\x00\x00\x00"
+else:
+    for p in (rp09_path, nvme_path):
+        if p in dp_add and isinstance(dp_add[p], dict):
+            dp_add[p].pop("pci-aspm-default", None)
+            dp_add[p].pop("ps-max-latency-us", None)
+            if not dp_add[p]:
+                del dp_add[p]
 
 # Ensure OpenCore deletes existing NVRAM boot-args so updated args take effect without manual NVRAM reset
 nvram_del = cfg.setdefault("NVRAM", {}).setdefault("Delete", {}).setdefault(nvram_uuid, [])

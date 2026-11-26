@@ -99,10 +99,19 @@ the suspended guest still had it open. macOS's FAT driver looped on
 of suspend, `release_disk` after stop, `/boot` automount in the guest (`guest-fix-boot.sh`), VM reduced to
 4 vCPU / 8 GB.
 
+## Updates (2026-11-26): NullMoth Optimus, HDMI & NVMe / Lag Tuning
+
+- **Optional GTX 1650 Optimus + Auto-HDMI stack:** documented in [`laptop/hackintosh/README.md`](../hackintosh/README.md) (`NitroGPU.app`, `nitro-gpu-ctl`, patches `0001` & `0002`, and EFI scripts `04-prepare-usb-test-efi.sh` / `05-install-nullmoth-optimus.sh` / `apply-efi-update.sh`).
+- **BAR1 / HDMI tuning (`0001`):** `nmp_gpu_headless()` keeps `WindowServer` on system-memory copy-out when `debug.nvaccel_iop_flip == 0` (`-nvrmnoflip`, preventing ~200 MB / 256 MB BAR1 exhaustion and `nvaccel_vm_refused`), enables shared BAR1 VRAM only when `iop_flip=1`, and fixes `NVMTLEventSync.m` early hold release (`nvmtl_vk_surface_share_on()`). Toggle zero-copy scanout flip via `nitro-gpu-ctl activate-hdmi --flip` or `hdmi-flip <on|off> --restart`.
+- **Samsung SSD 980 (`FW=1B4QFXO7` on `RP09@1d,0`) MMIO drops:** repeated `Loss of MMIO space` (`CSTS=0xffffffff`) kernel panics occurred around `13–14 min` uptime (`2026-11-21` before NullMoth, and `2026-11-26`) while `pmset disksleep 10` and `NVMeFix` APST/ASPM were active.
+  - `04-prepare-usb-test-efi.sh` adds `--no-debug` (`Target=0` + non-verbose `boot-args`), `--no-nvmefix` (`-nvmefoff`), and `--nvme-safe` (`-nvmefoff` plus `pci-aspm-default=<00000000>` and `ps-max-latency-us=<0000000000000000>` on `RP09@1d,0` / NVMe).
+  - Recommended power profile keeps regular S3 Sleep-to-RAM while eliminating 32 GB hibernate dumps and awake 10-min disk sleep: `sudo pmset -a hibernatemode 0 disksleep 0 powernap 0`.
+- **Live CPU saturation findings:** live slowdown (`Load Avg ~7`, `CPU 73–91 °C`, `CPU_Speed_Limit = 100`) traced primarily to `fileproviderd` (~`90%` CPU across 5 concurrent CloudStorage domains) and `Stats.app` (`system_profiler` background polling) + WidgetKit / `NotificationCenter` / `chronod`, alongside `WindowServer` BAR1 copy overhead before the `iop_flip` gating fix.
+
 ## Open items
 
 - Run `guest-fix-boot.sh` in CachyOS once (needs sudo in the guest).
-- Decide `hibernatemode 0`.
+- Apply `sudo pmset -a hibernatemode 0 disksleep 0 powernap 0` (retains normal S3 sleep) and test `--no-debug --nvme-safe` EFI plus a Samsung 980 firmware update beyond `1B4QFXO7`.
 - Wake-source fix for `XDCI` / `CNVW` after sleepmon captures a failed wake.
 - NitroSense: hide the "Nitro mode" control on the AN515-55 (firmware rejects WMBH 0x16 with status 0x01);
   status lines "Nitro mode" and "Power" use AN515-57 semantics.

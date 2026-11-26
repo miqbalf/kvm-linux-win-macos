@@ -35,7 +35,11 @@ Pinned upstream base tested: `45040e97f705e7de684f8dac45ff71ade72a31ba`.
    - Upstream `NVMTLDevice.m` only consulted `/Library/GPUBundles/nvmtl-gpu-policy.txt` when `debug.nmhybrid > 0` (`NMIntelFB.kext` mode for Intel 12th+ laptops), and only supported `mode apple` and `mode nvidia`.
    - Upstream `NVMTLDevice.m` also blocked `WindowServer` unconditionally whenever `debug.nvaccel_headless == 1` — which breaks external HDMI displays hot-plugged *after* an unplugged boot (`debug.nvaccel_headless` stays `1` for the boot even after `debug.nvaccelfb=1` arms `NVRMFramebuffer`).
    - On Comet Lake (`UHD 630`), macOS uses native `AppleIntelCFLGraphicsFramebuffer`, leaving `debug.nmhybrid == 0` and setting `debug.nvaccel_headless == 1`.
-   - This patch activates per-app policy evaluation whenever `nmp_hybrid_active(nmhybrid, nvaccel_headless) > 0`, adds **`mode igpu`** (stay on UHD 630 unless explicitly pinned with `nvidia <ProcessName>`), and adds `nmp_windowserver_headless_block()` + `WindowServer` bypass in `nvmtl_gpu_policy_allows()` so `WindowServer` stays off GTX 1650 while headless (`debug.nvaccelfb == 0`) yet immediately receives the GTX 1650 Metal device once HDMI connects and arms `NVRMFramebuffer` (`debug.nvaccelfb != 0`).
+   - This patch:
+     - Activates per-app policy evaluation whenever `nmp_hybrid_active_for_policy(nmhybrid, nvaccel_headless, has_policy_file) > 0` (covering both headless offload and HDMI-connected dual-GPU boots with an explicit root-owned policy file), and adds **`mode igpu`** (stay on UHD 630 unless explicitly pinned with `nvidia <ProcessName>`).
+     - Adds `nmp_windowserver_headless_block()` + `WindowServer` bypass in `nvmtl_gpu_policy_allows()` so `WindowServer` stays off GTX 1650 while headless (`debug.nvaccelfb == 0`) yet receives the GTX 1650 Metal device once HDMI connects and arms `NVRMFramebuffer` (`debug.nvaccelfb != 0`).
+     - Gates `nmp_gpu_headless()` (`nvmtl_vk.c`) on `nvaccel_armed && iop_flip_on` (`debug.nvaccel_iop_flip != 0`) so `WindowServer` uses shared BAR1 VRAM only when zero-copy flips are enabled, keeping `-nvrmnoflip` copy-path sessions on system-memory copy-out instead of saturating the 256 MB BAR1 window.
+     - Fixes `NVMTLEventSync.m` (`holds->early = nvmtl_ws_surface_wait() && nvmtl_vk_surface_share_on()`) so private copy-out surfaces do not drop their kernel hold before `nvmtlSurfaceOut` finishes copying to system memory.
 
 2. [`0002-rtd3-4char-acpi-method.patch`](patches/0002-rtd3-4char-acpi-method.patch)
    - macOS `IOACPIPlatformDevice::evaluateObject()` rejects dotted/multi-segment names longer than 4 characters with `kIOReturnBadArgument` (`0xe00002c2`).
@@ -52,7 +56,8 @@ Pinned upstream base tested: `45040e97f705e7de684f8dac45ff71ade72a31ba`.
 - **Keep `/Library/NullMoth/no-wsreset`**: Prevents NullMoth's LaunchDaemon from killing `WindowServer` on Intel FB0.
 - **Keep `gfxrst=4`**: Required whenever `WhateverGreen.kext` is loaded alongside NullMoth to avoid boot-screen mapping panics.
 - **Leave `NM_PRIMARY_GPU` unset (`0`)**: Keeps Intel UHD 630 as the primary display adapter.
-- **BAR1 / Resizable BAR note**: Acer Insyde BIOS hides Above 4G Decoding / ReBAR by default (256 MB BAR1 even with OpenCore `ResizeAppleGpuBars = -1`). If screen corruption/flickering happens with copy/flip scanout, pass `--noflip` to `04-prepare-usb-test-efi.sh` (`-nvrmnoflip`). Do **not** flash unverified unlocked BIOS mods without a hardware SPI programmer backup.
+- **BAR1 / Resizable BAR note**: Acer Insyde BIOS hides Above 4G Decoding / ReBAR by default (~208 MB usable inside 256 MB BAR1 even with OpenCore `ResizeAppleGpuBars = -1`). Default `-nvrmnoflip` (`--noflip`) keeps copy-path scanout; `nmp_gpu_headless()` keeps `WindowServer` on system-memory copy-out unless `debug.nvaccel_iop_flip != 0`. Test zero-copy scanout via `nitro-gpu-ctl activate-hdmi --flip` or `hdmi-flip on --restart` (and revert via `hdmi-flip off --restart`). Do **not** flash unverified unlocked BIOS mods without a hardware SPI programmer backup.
+- **NVMe / Sleep performance note (`Samsung SSD 980 1TB`):** Use `--no-debug` for quiet OpenCore/macOS boot (`Target=0`, no `-v debug=0x100 keepsyms=1 swd_panic=1`), and `--nvme-safe` if `NVMeFix.kext` ASPM/APST causes `Loss of MMIO space` panics on `RP09@1d,0`. Also run `sudo pmset -a hibernatemode 0 disksleep 0 powernap 0`: this keeps S3 Sleep-to-RAM intact while preventing 32 GB hibernate disk dumps and awake 10-minute NVMe idle drops.
 
 ---
 
@@ -77,7 +82,7 @@ laptop/hackintosh/
 │   └── 0002-rtd3-4char-acpi-method.patch
 ├── scripts/
 │   ├── sanitize-config.py            # Scrubs PlatformInfo + Misc.Security secrets before git commit
-│   ├── nitro-gpu-ctl.sh              # Scoped helper (/Library/NullMoth/nitro-gpu-ctl): set/status/arm-hdmi/activate-hdmi/watch-hdmi
+│   ├── nitro-gpu-ctl.sh              # Scoped helper (/Library/NullMoth/nitro-gpu-ctl): set/status/arm-hdmi/activate-hdmi/hdmi-flip/watch-hdmi
 │   ├── 00-ssh-hackintosh.sh          # Syncs app/scripts/configs/patches to ~/hackintosh-optimus and opens SSH shell
 │   ├── 01-backup-efi.sh              # Runs on Hackintosh: mounts booted ESP, creates raw .img + SHA256SUMS
 │   ├── 02-sync-efi-to-repo.sh        # Runs on controller Mac: runs remote backup (real PTY for sudo), pulls & sanitizes
@@ -151,6 +156,9 @@ Therefore, **if your Hackintosh currently boots with `-wegnoegpu` / `SSDT-NoHybG
    # Optional flags:
    #   --allow-flip    omit -nvrmnoflip (default keeps copy-path -nvrmnoflip for 256 MB BAR1)
    #   --no-auto-hdmi  omit nvfbhotplugpoll=2 nvagdcheads=1
+   #   --no-debug      omit -v debug=0x100 keepsyms=1 swd_panic=1 and set Misc.Debug.Target=0
+   #   --no-nvmefix    add -nvmefoff boot-arg (bypass NVMeFix.kext)
+   #   --nvme-safe     apply --no-nvmefix plus disable ASPM/APST on RP09 NVMe (PciRoot(0x0)/Pci(0x1D,0x0))
    #   --rtd3          enable SSDT-NXRTD3.aml + nvrtd3=1 (only after --ogkm NVRM.kext)
    ```
    `04-prepare-usb-test-efi.sh` disables `SSDT-NoHybGfx.aml`, removes `-wegnoegpu`, adds `nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth gfxrst=4 amfi_get_out_of_my_way=0x1 amfi=0x80 ipc_control_port_options=0 -nvrmnoflip nvfbhotplugpoll=2 nvagdcheads=1 nvrmsettle=10000` (overriding Turing's 100 s unplaced-BAR1 wait down to 10 s), keeps `IONDRVSupport` unblocked, and adds `boot-args` to `NVRAM.Delete`.
@@ -189,6 +197,8 @@ Reboot again after installation so macOS loads the new Auxiliary Kernel Collecti
   sudo /Library/NullMoth/nitro-gpu-ctl set nvidia       # apple | nvidia | igpu
   sudo /Library/NullMoth/nitro-gpu-ctl arm-hdmi         # kernel arm only
   sudo /Library/NullMoth/nitro-gpu-ctl activate-hdmi    # arms kernel + restarts WindowServer if needed (logs out session)
+  sudo /Library/NullMoth/nitro-gpu-ctl activate-hdmi --flip  # arms + enables iop_flip=1 + restarts WindowServer with shared BAR1 VRAM
+  sudo /Library/NullMoth/nitro-gpu-ctl hdmi-flip <on|off> [--restart]  # toggle zero-copy scanout flip (restart WindowServer when switching mode)
   ```
 - **Verify everything:**
   ```bash
@@ -203,9 +213,9 @@ Expected signals (verified on Acer Nitro AN515-55, macOS Tahoe `26.7.3`):
 - **Auto-HDMI notes:**
   - `nvfbhotplugpoll=2 nvagdcheads=1 nvrmsettle=10000 -nvrmnoflip` polls Turing HDMI every 2 s (`nvrm-fb.cpp`), exposes all 4 head slots in `NVRMAGDC`, keeps `NVAccel` on the safe copy path (`-nvrmnoflip`), and trims Turing's 256 MB BAR1 settle delay to 10 s.
   - `com.nullmoth.nitro-hdmi-watch` runs `nitro-gpu-ctl arm-hdmi` automatically when an external display hot-plugs after boot (and uses `debug.nvaccelfb=3` if a head publishes after arming).
-  - If HDMI was hot-plugged *after* an unplugged boot, `WindowServer` ignores `SIGTERM` from plain `killall WindowServer`; clicking **Activate HDMI Display** in `NitroGPU.app` (or running `sudo /Library/NullMoth/nitro-gpu-ctl activate-hdmi`) runs `launchctl kickstart -k system/com.apple.WindowServer || killall -9 WindowServer`, while `0001` ensures `WindowServer` receives the NVIDIA Metal device (`debug.nvaccelfb != 0`) instead of hitting `"Failed to create MetalDevice"`.
+  - If HDMI was hot-plugged *after* an unplugged boot, `WindowServer` ignores `SIGTERM` from plain `killall WindowServer`; clicking **Activate HDMI Display** in `NitroGPU.app` (or running `sudo /Library/NullMoth/nitro-gpu-ctl activate-hdmi`) runs `launchctl kickstart -k system/com.apple.WindowServer || killall -9 WindowServer`, while `0001` ensures `WindowServer` receives the NVIDIA Metal device (`debug.nvaccelfb != 0`) instead of hitting `"Failed to create MetalDevice"`. Pass `--flip` (or `hdmi-flip on --restart`) to restart `WindowServer` with `debug.nvaccel_iop_flip=1` and shared BAR1 VRAM enabled.
 - **Test coverage:**
-  - Offline host checks: `test_gpu_policy` (`27/27` assertions passed, `0 failed`), `test_nv_rtd3_policy.py` (`all passed`), `build-rtd3-aml.py` (`169` bytes, ACPI checksum valid).
+  - Offline host checks: `test_gpu_policy` (`34/34` assertions passed, `0 failed`), `test_nv_rtd3_policy.py` (`all passed`), `build-rtd3-aml.py` (`169` bytes, ACPI checksum valid).
   - Note: RTD3 D3cold kernel path (`0002-rtd3-4char-acpi-method.patch`) is verified via offline host unit tests and x86_64 kernel compilation syntax checks; runtime D3cold testing requires supplying pristine NVIDIA open-gpu-kernel-modules `620.70.06` sources via `--ogkm` when building `NVRM.kext`.
 
 ---
