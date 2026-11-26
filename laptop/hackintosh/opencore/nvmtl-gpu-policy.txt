@@ -1,0 +1,37 @@
+# NullMoth Optimus Per-App GPU Policy Template (Acer Nitro AN515-55)
+#
+# Install on macOS as:
+#   /Library/GPUBundles/nvmtl-gpu-policy.txt  (owner root:wheel, mode 0644)
+#
+# Requires NullMoth patch 0001-optimus-policy-native-igpu-headless.patch so
+# NVMTLDevice.m consults this file in native iGPU headless mode
+# (debug.nvaccel_headless > 0) even though debug.nmhybrid == 0.
+#
+# Modes (matches Acer Nitro 5 / NitroGPU.app):
+#   mode apple  -> Auto: apps with NSSupportsAutomaticGraphicsSwitching=YES use
+#                  UHD 630; 3D/compute apps get GTX 1650 unless overridden
+#   mode nvidia -> NVIDIA Mode: all apps get GTX 1650 unless overridden by "igpu"
+#   mode igpu   -> iGPU Mode: all apps stay on UHD 630 unless overridden by "nvidia"
+#
+# Rule syntax (exact process name match against processName / argv[0],
+# checked in order — the LAST matching rule wins):
+#   igpu   <process-name>
+#   nvidia <process-name>
+#
+# WindowServer stays off headless NVIDIA offload while no NVIDIA display is
+# armed (debug.nvaccelfb == 0), and is automatically allowed once HDMI connects
+# and arms a framebuffer. Restart an application after editing this file.
+
+mode apple
+
+# Keep desktop/system processes strictly on Intel UHD 630
+igpu WindowServer
+igpu Dock
+igpu Finder
+igpu loginwindow
+igpu SystemUIServer
+
+# Example GPU workloads pinned to GTX 1650 Mobile (uncomment or adjust exact process name):
+# nvidia Blender
+# nvidia DaVinci Resolve
+# nvidia MetalBench

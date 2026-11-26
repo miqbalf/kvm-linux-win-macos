@@ -1,0 +1,143 @@
+diff --git a/plugin/NVMTLDevice.m b/plugin/NVMTLDevice.m
+index 35bb24e..05a1e32 100644
+--- a/plugin/NVMTLDevice.m
++++ b/plugin/NVMTLDevice.m
+@@ -709,11 +709,17 @@ static bool nvmtl_other_metal_gpu(void)
+     IOObjectRelease(it);
+     return found;
+ }
+-// Per-process GPU choice on a hybrid laptop (nvmtl_gpu_policy.h). Inactive unless the hybrid switch is on.
++// Per-process GPU choice on a hybrid laptop (nvmtl_gpu_policy.h). Active with nmhybrid > 0 or native-iGPU headless offload.
+ static bool nvmtl_gpu_policy_allows(const char *me)
+ {
+-    int lv = 0; size_t ln = sizeof lv;
+-    if (sysctlbyname("debug.nmhybrid", &lv, &ln, NULL, 0) != 0 || lv <= 0) return true;
++    /* When a physical NVIDIA display framebuffer is armed (boot or HDMI hot-plug), WindowServer needs the NVIDIA
++       Metal device to composite onto NVRMFramebuffer regardless of app policy mode or igpu WindowServer defaults. */
++    if (!strcmp(me, "WindowServer") && nvmtl_accel_armed()) return true;
++    int lv = 0, hv = 0; size_t ln = sizeof lv, hn = sizeof hv;
++    if (sysctlbyname("debug.nmhybrid", &lv, &ln, NULL, 0) != 0) lv = 0;
++    if (sysctlbyname("debug.nvaccel_headless", &hv, &hn, NULL, 0) != 0) hv = 0;
++    const int eff = nmp_hybrid_active(lv, hv);
++    if (eff <= 0) return true;
+     char text[4096] = {0};
+     // Read only a regular file owned by root and not writable by group or others, opened without following a link,
+     // as the DLSS kernel cache is: the policy decides which processes get the GPU.
+@@ -733,7 +739,7 @@ static bool nvmtl_gpu_policy_allows(const char *me)
+         if ([v respondsToSelector:@selector(boolValue)]) autosw = [v boolValue] ? 1 : 0;
+     }
+     const char *why = "";
+-    int give = nmp_decide(lv, apple, pref, autosw, nvmtl_other_metal_gpu(), &why);
++    int give = nmp_decide(eff, apple, pref, autosw, nvmtl_other_metal_gpu(), &why);
+     nvlog("  gpu policy for %s: %s (%s)", me, give ? "NVIDIA device" : "no NVIDIA device", why);
+     return give != 0;
+ }
+@@ -745,8 +751,8 @@ static bool nvmtl_process_is_allowed(void)
+     // on the GPU that owns the display, as on Apple's two-GPU Macs. The list below cannot express this: "*" matches
+     // WindowServer before its "!WindowServer" line is reached.
+     { int hv = 0; size_t hn = sizeof hv;
+-      if (!strcmp(me, "WindowServer") && (nvmtl_vk_vendor() != 0x10de ||
+-                                          (sysctlbyname("debug.nvaccel_headless", &hv, &hn, NULL, 0) == 0 && hv))) {
++      int hd = (sysctlbyname("debug.nvaccel_headless", &hv, &hn, NULL, 0) == 0 && hv) ? 1 : 0;
++      if (!strcmp(me, "WindowServer") && nmp_windowserver_headless_block(nvmtl_vk_vendor() == 0x10de, nvmtl_accel_armed(), hd)) {
+           nvlog("  headless GPU: no device for WindowServer (it composites on the GPU that owns the display)"); return false; } }
+     if (getenv("NVMTL_ENABLE")) return true;
+     if (!strcmp(me, "mtlprobe") || !strcmp(me, "nvmtltest") || !strcmp(me, "nvmtlrender")) return true;
+diff --git a/plugin/nvmtl_gpu_policy.h b/plugin/nvmtl_gpu_policy.h
+index 9c52607..bb69117 100644
+--- a/plugin/nvmtl_gpu_policy.h
++++ b/plugin/nvmtl_gpu_policy.h
+@@ -8,11 +8,12 @@
+  * Which processes get the NVIDIA GPU as a Metal device on a hybrid laptop. Plain C so tools/test_gpu_policy.c runs the same
+  * code on the host; NVMTLDevice.m supplies the inputs.
+  *
+- * Only active when the hybrid switch (boot-arg nmhybrid) is on, and only matters when another GPU also offers Metal
+- * (an integrated GPU macOS still drives, such as Coffee Lake). With no second Metal GPU the NVIDIA device is the only
+- * choice and is always given.
++ * Active when the hybrid switch (boot-arg nmhybrid) is on OR when native integrated graphics drive the display and the
++ * NVIDIA GPU runs in headless offload mode (debug.nvaccel_headless == 1). With no second Metal GPU the NVIDIA device
++ * is the only choice and is always given.
+  *
+  * Policy file /Library/GPUBundles/nvmtl-gpu-policy.txt, one rule per line, '#' starts a comment:
++ *     mode igpu            only processes with an explicit 'nvidia' line get the NVIDIA device
+  *     mode nvidia          (default) every process gets the NVIDIA device
+  *     mode apple           follow Apple's rule: a process whose Info.plist sets NSSupportsAutomaticGraphicsSwitching to
+  *                          true is content with the low-power GPU and does not get the NVIDIA device; every other process
+@@ -28,6 +29,7 @@
+ #include <string.h>
+ 
+ enum { NMP_PREF_AUTO = 0, NMP_PREF_NVIDIA = 1, NMP_PREF_IGPU = 2 };
++enum { NMP_MODE_NVIDIA = 0, NMP_MODE_APPLE = 1, NMP_MODE_IGPU = 2 };
+ 
+ /* Reads the policy text. Returns the per-process preference; *mode_apple is 1 for "mode apple". */
+ static inline int nmp_parse(const char *text, const char *proc, int *mode_apple)
+@@ -45,7 +47,10 @@ static inline int nmp_parse(const char *text, const char *proc, int *mode_apple)
+         if (!*q || *q == '#') continue;
+         if (!strncmp(q, "mode ", 5)) {
+             char *v = q + 5; while (*v == ' ' || *v == '\t') v++;
+-            if (!strcmp(v, "apple")) *mode_apple = 1; else if (!strcmp(v, "nvidia")) *mode_apple = 0;
++            size_t ml = strlen(v); while (ml && (v[ml - 1] == ' ' || v[ml - 1] == '\t')) v[--ml] = 0;
++            if (!strcmp(v, "apple")) *mode_apple = NMP_MODE_APPLE;
++            else if (!strcmp(v, "nvidia")) *mode_apple = NMP_MODE_NVIDIA;
++            else if (!strcmp(v, "igpu")) *mode_apple = NMP_MODE_IGPU;
+         } else if (!strncmp(q, "igpu ", 5) || !strncmp(q, "nvidia ", 7)) {
+             int ig = q[0] == 'i';
+             char *v = q + (ig ? 5 : 7); while (*v == ' ' || *v == '\t') v++;
+@@ -56,6 +61,22 @@ static inline int nmp_parse(const char *text, const char *proc, int *mode_apple)
+     return pref;
+ }
+ 
++/* Effective hybrid level: explicit nmhybrid (>0), or 1 when native integrated graphics own the display and NVIDIA runs headless. */
++static inline int nmp_hybrid_active(int nmhybrid, int nvaccel_headless)
++{
++    if (nmhybrid > 0) return nmhybrid;
++    return nvaccel_headless > 0 ? 1 : 0;
++}
++
++/* 1 = block WindowServer from NVIDIA Metal when non-NVIDIA or purely headless (debug.nvaccelfb == 0);
++   0 = allow WindowServer once an NVIDIA display framebuffer is armed (including post-boot HDMI hotplug). */
++static inline int nmp_windowserver_headless_block(int vk_vendor_is_nv, int nvaccel_armed, int nvaccel_headless)
++{
++    if (!vk_vendor_is_nv) return 1;
++    if (nvaccel_armed) return 0;
++    return nvaccel_headless ? 1 : 0;
++}
++
+ /* 1 = give the process the NVIDIA device. app_auto_switch: the Info.plist value, -1 when absent. */
+ static inline int nmp_decide(int hybrid_level, int mode_apple, int pref, int app_auto_switch, int other_metal_gpu, const char **why)
+ {
+@@ -65,9 +86,10 @@ static inline int nmp_decide(int hybrid_level, int mode_apple, int pref, int app
+     else if (!other_metal_gpu)          { w = "no other Metal GPU to use instead"; r = 1; }
+     else if (pref == NMP_PREF_IGPU)     { w = "policy: this process uses the integrated GPU"; r = 0; }
+     else if (pref == NMP_PREF_NVIDIA)   { w = "policy: this process uses the NVIDIA GPU"; r = 1; }
+-    else if (!mode_apple)               { w = "mode nvidia"; r = 1; }
+-    else if (app_auto_switch == 1)      { w = "mode apple: the app allows automatic graphics switching"; r = 0; }
+-    else                                { w = "mode apple: the app does not opt into automatic switching"; r = 1; }
++    else if (mode_apple == NMP_MODE_IGPU)   { w = "mode igpu: using the integrated GPU"; r = 0; }
++    else if (mode_apple == NMP_MODE_NVIDIA) { w = "mode nvidia"; r = 1; }
++    else if (app_auto_switch == 1)          { w = "mode apple: the app allows automatic graphics switching"; r = 0; }
++    else                                    { w = "mode apple: the app does not opt into automatic switching"; r = 1; }
+     if (why) *why = w;
+     return r;
+ }
+diff --git a/tools/test_gpu_policy.c b/tools/test_gpu_policy.c
+index 7789bbe..e0dd980 100644
+--- a/tools/test_gpu_policy.c
++++ b/tools/test_gpu_policy.c
+@@ -33,6 +33,16 @@ int main(void)
+     ARM("mode apple: an app that sets the key to false keeps it", DECIDE(1, 1, NMP_PREF_AUTO, 0, 1) == 1);
+     const char *w = 0; nmp_decide(1, 1, NMP_PREF_AUTO, 1, 1, &w);
+     ARM("the reason is named for the log", w && strstr(w, "automatic graphics switching"));
++    ARM("native iGPU + headless NVIDIA activates policy", nmp_hybrid_active(0, 1) == 1);
++    ARM("explicit nmhybrid keeps its level", nmp_hybrid_active(2, 1) == 2);
++    ARM("desktop with NVIDIA display leaves policy inactive", nmp_hybrid_active(0, 0) == 0);
++    ARM("mode igpu is read", (nmp_parse("mode igpu\n", "x", &apple), apple == NMP_MODE_IGPU));
++    ARM("mode igpu sends ordinary apps to integrated GPU", DECIDE(1, NMP_MODE_IGPU, NMP_PREF_AUTO, 0, 1) == 0);
++    ARM("mode igpu still honors explicit nvidia rule", DECIDE(1, NMP_MODE_IGPU, NMP_PREF_NVIDIA, 1, 1) == 1);
++    ARM("WindowServer blocked on non-NVIDIA vendor even if armed", nmp_windowserver_headless_block(0, 1, 0) == 1);
++    ARM("WindowServer blocked on pure headless NVIDIA with no armed display", nmp_windowserver_headless_block(1, 0, 1) == 1);
++    ARM("WindowServer allowed when HDMI hot-plug arms nvaccelfb after headless boot", nmp_windowserver_headless_block(1, 1, 1) == 0);
++    ARM("WindowServer passes headless gate on desktop before arming", nmp_windowserver_headless_block(1, 0, 0) == 0);
+     printf("%d failed\n", fails);
+     return fails != 0;
+ }

@@ -95,6 +95,11 @@ Regenerate its config from the real one with `vm/macos/make-vm-config.py` (XML o
 only OpenRuntime driver), copy into the image (`mount -o loop opencore-lt.img /mnt/ocimg`), then reinstall it
 with the setup script. Booting the Hackintosh natively invalidates `nvme1-overlay.qcow2`: delete it and rerun setup.
 
+## Bare-metal Hackintosh & NullMoth Optimus (macOS Tahoe)
+See [`hackintosh/README.md`](hackintosh/README.md) for bare-metal macOS Tahoe on the AN515-55:
+- Automated live ESP backup (`01-backup-efi.sh` / `02-sync-efi-to-repo.sh`) into gitignored `hackintosh/efi-backup/` plus sanitized `hackintosh/opencore/config-sanitized.plist`
+- NullMoth (`nvidia-macos-driver`) Optimus offload & Auto-HDMI (`patches/`): per-app `nvmtl-gpu-policy.txt` support in native UHD 630 headless mode plus hot-plug `WindowServer` Metal gate (`0001`), 4-character ACPI RTD3 D3cold `NXOF`/`NXO_` wrappers via `SSDT-NXRTD3` (`0002`), native `NitroGPU.app` / `NitroGPU-Switcher.dmg` switcher (`Auto` / `NVIDIA` / `iGPU` + 1-click HDMI activation), USB/ESP EFI helpers (`04`, `apply-efi-update.sh`), installer (`05`), and verifier (`06`).
+
 ## Lessons (2026-11-19)
 - Binding the GTX 1650 to vfio-pci and blacklisting nvidia at boot gave a black screen after login.
   Restored the fresh-install snapshot. Those scripts are in `host/attic-kimi/` and must not be run.
