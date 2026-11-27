@@ -4,8 +4,7 @@ Linux, macOS and Windows on one hybrid-GPU laptop, without rebooting:
 - **Linux** (CachyOS + GNOME) is the host and owns the laptop by default.
 - **macOS** (the laptop's own Hackintosh disk) runs as a VM with the **Intel iGPU** passed through, full screen
   on the laptop panel, Metal 3 (`gpu-mode mac`).
-- **Windows 10** runs as a VM with the **GTX 1650** passed through, shown in a Looking Glass window on the
-  Linux desktop (`win-gpu`).
+- **Windows 10** runs in two modes sharing the same disk: **GTX 1650 passthrough** (`win-gpu`, Looking Glass window or direct physical HDMI without the popup) or **Virtual GPU** (`win10`, keeps GTX 1650 + Linux External HDMI while running resizable Windows desktop / Coherence-style apps).
 - **Fans, keyboard RGB, battery limit** like Acer NitroSense: app **Nitro Control** or `nitro` (Linux only).
 
 This folder is separate from the desktop server setup in the repo root (`host/`, `vm/`, `docs/`): nothing here
@@ -14,7 +13,7 @@ is shared with it.
 ## Apps (no terminal needed)
 | App (app grid) | What | Install |
 |---|---|---|
-| **VM Switch** | See what runs; buttons to start/stop Windows on the GTX, macOS on the laptop screen, **External HDMI** toggle (Linux HDMI vs Windows VM passthrough), the VNC VMs, Windows desktop, or Windows apps (Coherence-style) | `sudo bash laptop/host/vm-switch/install.sh` |
+| **VM Switch** | See what runs; switch between **Windows (GTX 1650)** (Looking Glass or external-monitor-only), **Windows (Virtual GPU)** (desktop + WinApps alongside Linux screens), macOS on the iGPU, **External HDMI**, and **Deskflow** local mouse/terminal bridge | `sudo bash laptop/host/vm-switch/install.sh` |
 | **Nitro Control** | Fans (auto / max / custom), 4-zone keyboard RGB and effects, 80% battery limit, live RPM and temps | `sudo bash laptop/host/nitrosense/install.sh` |
 | **Windows (GTX 1650)** | Starts Windows and opens its window in one click | part of `01-host-setup.sh` |
 
@@ -64,12 +63,13 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | `host/gpu-mode` | the switch: `mac`, `host`, `win`, `win-off`, `hdmi-on`, `hdmi-off`, `status` |
 | `host/linux-hdmi` | CLI wrapper for `hdmi-on` / `hdmi-off` / `status` (`/usr/local/bin/linux-hdmi`) |
 | `host/vm-switch/` | VM Switch app (GTK4), polkit rule for `gpu-mode`, installer |
-| `host/win-gpu`, `host/looking-glass/` | Windows launcher, menu entry, Looking Glass client build + config |
+| `host/win-gpu`, `host/looking-glass/` | Windows GTX launcher (`start` / `--no-lg` / `desktop` / `stop`), Looking Glass config |
+| `host/deskflow-mode` | Deskflow bridge: `local` (CachyOS <-> Windows mouse/clipboard), `mac`, `sync-windows`, `win-terminal` |
 | `host/touchpad-bridge` | touchpad as a tap-to-click mouse for macOS |
 | `host/nitrosense/` | fan/RGB driver install (linuwu_sense, DKMS), `nitro` command, Nitro Control app |
 | `host/session/`, `host/gtx-run` | desktop draws on Intel only (GTX always free for Windows); `gtx-run <app>` for the GTX in Linux |
-| `host/winapps/` | WinApps setup (Windows apps as Linux windows) |
-| `host/wexec` | run PowerShell in a Windows VM from Linux (QEMU guest agent) |
+| `host/winapps/` | WinApps setup + `winapps-sync` (auto-detects `win10-gpu` or `win10`) |
+| `host/wexec` | run PowerShell in a Windows VM (`win10`, `win10-gpu`, or `auto`) via QEMU guest agent |
 | `host/libvirt-hooks/qemu` | auto return to Linux when a passthrough VM stops |
 | `host/udev/`, `host/systemd/`, `host/tmpfiles/` | disk name, touchpad, GNOME keeps off the GTX, Looking Glass shared memory |
 | `vm/macos/` | macOS domains, OpenCore config generator, Intel GOP image build |

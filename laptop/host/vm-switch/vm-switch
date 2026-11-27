@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-# VM Switch - one window to see and switch what runs on the laptop: Linux, Windows on the GTX 1650
-# (Looking Glass window), macOS on the laptop screen (iGPU), plus the VNC-only VMs.
-# Uses gpu-mode (through pkexec, policy local.kvm.gpu-mode) for GPU switches, virsh (group libvirt)
-# for the plain VMs, win-gpu for the Looking Glass window, nitro-control for fans and RGB.
-import fcntl, glob, os, shutil, subprocess, sys, threading, time
+# VM Switch - switch what runs on the laptop: Linux (with optional Virtual GPU Windows + apps),
+# Windows on the GTX 1650 (Looking Glass or direct External HDMI), macOS on the laptop iGPU,
+# external HDMI routing, and Deskflow local mouse/terminal bridge.
+import configparser, fcntl, glob, os, shutil, subprocess, sys, threading, time
 # Draw with the Intel iGPU only. GTK4 otherwise opens the GTX (NVIDIA EGL/Vulkan) and holds /dev/nvidia*,
 # which blocks `gpu-mode win` from moving the GTX to Windows ("programs still use the GTX: python3").
 os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = "/usr/share/glvnd/egl_vendor.d/50_mesa.json"
@@ -17,6 +16,13 @@ VIRSH = ["virsh", "-c", "qemu:///system"]
 GPU_MODE = "/usr/local/sbin/gpu-mode"
 IGPU, GTX = "0000:00:02.0", "0000:01:00.0"
 VNC = {"macos": 5902, "win10": 5903}
+PREF_DIR = os.path.expanduser("~/.config/vm-switch")
+NO_LG_PREF = f"{PREF_DIR}/no-looking-glass"
+DESKFLOW_CONF = os.path.expanduser("~/.config/Deskflow/Deskflow.conf")
+DESKFLOW_MAC_CONF = os.path.expanduser("~/.config/Deskflow/Deskflow.conf.mac")
+DESKFLOW_SIDE_PREF = f"{PREF_DIR}/deskflow-side"
+EDGES = ("right", "up", "left", "down")
+EDGE_LABELS = {"right": "Right", "up": "Above", "left": "Left", "down": "Below"}
 
 CSS = b"""
 .hero { padding: 18px 20px; border-radius: 14px; }
@@ -109,6 +115,40 @@ def read_hdmi():
             "gs_open": gs_open, "gs_mesa": gs_mesa}
 
 
+def read_deskflow():
+    """Fast local Deskflow config & process snapshot."""
+    cp = configparser.ConfigParser(interpolation=None)
+    if os.path.exists(DESKFLOW_CONF):
+        try:
+            cp.read(DESKFLOW_CONF)
+        except configparser.Error:
+            pass
+    cm = cp.get("core", "coreMode", fallback="0")
+    mode = {"2": "local", "1": "mac"}.get(cm, "off")
+    side = "right"
+    try:
+        s = open(DESKFLOW_SIDE_PREF).read().strip()
+        if s in EDGE_LABELS:
+            side = s
+    except OSError:
+        pass
+    running = subprocess.run(["pgrep", "-u", str(os.getuid()), "-x", "deskflow-core"],
+                             capture_output=True).returncode == 0
+    return {
+        "mode": mode,
+        "side": side,
+        "remote": cp.get("client", "remoteHost", fallback=""),
+        "running": running,
+        "has_mac": os.path.exists(DESKFLOW_MAC_CONF),
+        "installed": bool(shutil.which("deskflow") and shutil.which("deskflow-mode")),
+    }
+
+
+def pgrep_user(pattern):
+    return subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", pattern],
+                          capture_output=True).returncode == 0
+
+
 def read_state():
     s = {"running": set(), "igpu": drv(IGPU), "gtx": drv(GTX), "busy": switching(), "lg": False, "log": ""}
     try:
@@ -116,11 +156,13 @@ def read_state():
         s["running"] = {l.strip() for l in out.splitlines() if l.strip()}
     except (OSError, subprocess.TimeoutExpired):
         pass
-    s["apps"] = app_windows_open()
+    s["apps"] = pgrep_user("xfreerdp3 .*/app:")
+    s["rdp_desktop"] = pgrep_user("xfreerdp3 .*(Microsoft Windows|Windows RDP Session)")
     s["net"] = read_net()
     s["hdmi"] = read_hdmi()
-    s["lg"] = subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "looking-glass-client"],
-                             capture_output=True).returncode == 0
+    s["deskflow"] = read_deskflow()
+    s["no_lg"] = os.path.exists(NO_LG_PREF)
+    s["lg"] = pgrep_user("looking-glass-client")
     try:
         s["log"] = subprocess.run(["journalctl", "-t", "gpu-mode", "-n", "14", "-o", "short", "--no-pager", "-q"],
                                   capture_output=True, text=True, timeout=5).stdout.strip()
@@ -175,9 +217,27 @@ def winapps_entries():
     return [(nice.get(a, n if names.count(n) == 1 else f"{n} ({a})"), a, i) for n, a, i in out]
 
 
-def app_windows_open():
-    """True while WinApps (FreeRDP RemoteApp) windows are open."""
-    return subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "xfreerdp3 .*/app:"], capture_output=True).returncode == 0
+def set_pill(pill, text, kind):
+    pill.set_label(text)
+    for k in ("on", "off", "busy"):
+        pill.remove_css_class(k)
+    pill.add_css_class(kind)
+
+
+def set_button_box(box, specs):
+    """Populate a Gtk.Box with pill buttons from [(label, style_or_None, callback_or_None)]."""
+    while (c := box.get_first_child()):
+        box.remove(c)
+    for label, style, cb in specs:
+        b = Gtk.Button(label=label)
+        b.add_css_class("pill")
+        if style:
+            b.add_css_class(style)
+        if cb:
+            b.connect("clicked", lambda _b, f=cb: f())
+        else:
+            b.set_sensitive(False)
+        box.append(b)
 
 
 class OsCard(Gtk.Box):
@@ -206,33 +266,20 @@ class OsCard(Gtk.Box):
         self.append(self.buttons)
 
     def set_state(self, text, kind, info):
-        self.pill.set_label(text)
-        for k in ("on", "off", "busy"):
-            self.pill.remove_css_class(k)
-        self.pill.add_css_class(kind)
+        set_pill(self.pill, text, kind)
         self.info.set_label(info)
 
     def set_buttons(self, specs):
-        """specs: list of (label, style or None, callback or None = disabled)."""
-        while (c := self.buttons.get_first_child()):
-            self.buttons.remove(c)
-        for label, style, cb in specs:
-            b = Gtk.Button(label=label)
-            b.add_css_class("pill")
-            if style:
-                b.add_css_class(style)
-            if cb:
-                b.connect("clicked", lambda _b, f=cb: f())
-            else:
-                b.set_sensitive(False)
-            self.buttons.append(b)
+        set_button_box(self.buttons, specs)
 
 
 class Win(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="VM Switch", default_width=620, default_height=820)
+        super().__init__(application=app, title="VM Switch", default_width=660, default_height=880)
         self.state = None
-        self.pending = {}      # vm -> text while an action we started is running
+        self.pending = {}
+        self.synced_vm = None
+        self._no_lg_syncing = False
         self.toasts = Adw.ToastOverlay()
         tv = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -241,7 +288,7 @@ class Win(Adw.ApplicationWindow):
         header.pack_end(fans)
         tv.add_top_bar(header)
         scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
-        clamp = Adw.Clamp(maximum_size=640, tightening_threshold=480)
+        clamp = Adw.Clamp(maximum_size=680, tightening_threshold=500)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
                       margin_top=18, margin_bottom=24, margin_start=16, margin_end=16)
         clamp.set_child(box)
@@ -250,7 +297,6 @@ class Win(Adw.ApplicationWindow):
         self.toasts.set_child(tv)
         self.set_content(self.toasts)
 
-        # Now: what owns the screen and the GPUs
         hero = Gtk.Box(spacing=14)
         hero.add_css_class("card")
         hero.add_css_class("hero")
@@ -270,12 +316,17 @@ class Win(Adw.ApplicationWindow):
         lbl.add_css_class("heading")
         box.append(lbl)
         self.win = OsCard("input-gaming-symbolic", "Windows")
+        lg_box = Gtk.Box(spacing=10, margin_top=2)
+        lg_lbl = Gtk.Label(xalign=0, hexpand=True, wrap=True,
+                           label="External monitor only: skip the Looking Glass popup on Linux when GTX 1650 starts.")
+        lg_lbl.add_css_class("dim-label")
+        self.no_lg_switch = Gtk.Switch(valign=Gtk.Align.CENTER, active=os.path.exists(NO_LG_PREF))
+        self.no_lg_switch.connect("notify::active", self.on_no_lg_toggled)
+        lg_box.append(lg_lbl)
+        lg_box.append(self.no_lg_switch)
+        self.win.append(lg_box)
+
         self.mac = OsCard("video-display-symbolic", "macOS")
-        self.hdmi = OsCard("video-joined-displays-symbolic", "External HDMI")
-        box.append(self.win)
-        box.append(self.mac)
-        box.append(self.hdmi)
-        # Opt-in: the Apple Wi-Fi + Bluetooth go to macOS (Continuity, Universal Control). Experimental.
         rb = Gtk.Box(spacing=10, margin_top=2)
         rl = Gtk.Label(xalign=0, hexpand=True, wrap=True,
                        label="Also give macOS the Wi-Fi and Bluetooth (Universal Control, AirDrop). Experimental. "
@@ -286,6 +337,14 @@ class Win(Adw.ApplicationWindow):
         rb.append(self.radios)
         self.mac.append(rb)
 
+        self.hdmi = OsCard("video-joined-displays-symbolic", "External HDMI")
+        box.append(self.win)
+        box.append(self.hdmi)
+        box.append(self.mac)
+
+        self.df = OsCard("input-mouse-symbolic", "Mouse & Terminal Bridge (Deskflow)")
+        box.append(self.df)
+
         self.netgrp = Adw.PreferencesGroup(title="Network",
                                            description="Linux needs the USB dongle to stay online while macOS has the Wi-Fi.")
         ws = Gtk.Button(label="Wi-Fi settings", valign=Gtk.Align.CENTER)
@@ -295,17 +354,15 @@ class Win(Adw.ApplicationWindow):
         box.append(self.netgrp)
         self.netrows = []
 
-        self.synced = False      # winapps-sync ran for this Windows boot
-
         more = Adw.PreferencesGroup(title="More")
         box.append(more)
         self.rows = {}
         for vm, title, sub in (("macos", "macOS in a window", "Virtual screen over VNC, no graphics acceleration"),
-                               ("win10", "Windows install / rescue", "Same disk as Windows, no GTX, VNC screen")):
+                               ("win10", "Windows VNC fallback", "Raw virtual console (VNC 127.0.0.1:5903) for BIOS or recovery")):
             row = Adw.ActionRow(title=title, subtitle=sub)
             pill = Gtk.Label(valign=Gtk.Align.CENTER)
             pill.add_css_class("pill")
-            view = Gtk.Button(icon_name="view-reveal-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Open viewer")
+            view = Gtk.Button(icon_name="view-reveal-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Open VNC viewer")
             view.add_css_class("flat")
             view.connect("clicked", lambda _b, v=vm: self.open_vnc(v))
             act = Gtk.Button(valign=Gtk.Align.CENTER)
@@ -341,8 +398,16 @@ class Win(Adw.ApplicationWindow):
     def render(self, s):
         self.state = s
         run = s["running"]
-        win_on, mac_on = "win10-gpu" in run, "macos-igpu" in run
+        win_gpu, win_virt, mac_on = "win10-gpu" in run, "win10" in run, "macos-igpu" in run
+        win_any = win_gpu or win_virt
         busy = s["busy"]
+        df = s.get("deskflow", {})
+        no_lg = s.get("no_lg", False)
+
+        self._no_lg_syncing = True
+        if self.no_lg_switch.get_active() != no_lg:
+            self.no_lg_switch.set_active(no_lg)
+        self._no_lg_syncing = False
 
         hdmi = s.get("hdmi", {})
         hdmi_locked = hdmi.get("locked", True)
@@ -352,12 +417,17 @@ class Win(Adw.ApplicationWindow):
         # hero
         if mac_on:
             icon, title, sub = "video-display-symbolic", "macOS has the laptop screen", "Apple menu > Shut Down to come back."
-        elif win_on:
-            icon, title = "input-gaming-symbolic", "Linux, with Windows running"
-            sub = "Windows uses the GTX 1650 (and HDMI port). Right Ctrl grabs or releases the keyboard and mouse."
+        elif win_gpu:
+            icon, title = "input-gaming-symbolic", "Linux + Windows (GTX 1650 passthrough)"
+            sub = ("Windows drives the HDMI port directly"
+                   + (" · mouse shares via Deskflow." if df.get("mode") == "local" else " · Right Ctrl grabs/releases Looking Glass."))
+        elif win_virt:
+            icon = "video-joined-displays-symbolic" if hdmi_live else "computer-symbolic"
+            title = "Linux + Windows (Virtual GPU)" + (" · External HDMI" if hdmi_live else "")
+            sub = "Linux keeps all screens; open the resizable Windows desktop or individual Windows apps side-by-side."
         elif hdmi_live:
             icon, title = "video-joined-displays-symbolic", "Linux (External HDMI enabled)"
-            sub = "No virtual machine is running. Linux drives the laptop screen and external HDMI."
+            sub = "Linux drives laptop + HDMI. Start Windows (Virtual GPU) below to run Windows across both screens."
         else:
             icon, title, sub = "computer-symbolic", "Linux", "No virtual machine is running. GTX 1650 and laptop screen belong to Linux."
         if busy:
@@ -366,31 +436,56 @@ class Win(Adw.ApplicationWindow):
         self.hero_title.set_label(title)
         self.hero_sub.set_label(sub)
 
-        # Windows card
-        wp = self.pending.get("win10-gpu")
+        # Windows card (unified Virtual GPU + GTX 1650 Passthrough)
+        wp = self.pending.get("win10-gpu") or self.pending.get("win10")
         if busy or wp:
             self.win.set_state(wp or "Switching", "busy", "Please wait…")
             self.win.set_buttons([("Working…", None, None)])
-        elif win_on:
-            self.win.set_state("Running", "on", "On the GTX 1650, in a window on this desktop." +
-                               ("" if s["lg"] else " The window is closed."))
-            self.win.set_buttons([("Show desktop" if not s["lg"] else "Desktop is open", "suggested-action",
-                                   None if s["lg"] else self.win_show),
-                                  ("Windows apps", None, self.show_apps),
-                                  ("Shut down", None, self.win_stop)])
-            if not self.synced:
-                self.synced = True
-                self.sync_apps()
+        elif win_gpu:
+            desc = ("On the GTX 1650 + physical HDMI."
+                    + (" Mouse glides via Deskflow." if df.get("mode") == "local" else "")
+                    + ("" if s["lg"] else " Looking Glass window is hidden."))
+            self.win.set_state("Running · GTX 1650", "on", desc)
+            self.win.set_buttons([
+                ("Looking Glass open" if s["lg"] else "Open Looking Glass", "suggested-action", None if s["lg"] else self.win_show),
+                ("Windows apps", None, self.show_apps),
+                ("Linux terminal", None, self.win_terminal),
+                ("Shut down", None, self.win_stop),
+            ])
+        elif win_virt:
+            desc = ("Virtual GPU — Linux keeps eDP-1 and HDMI."
+                    + (" Full desktop window is open." if s["rdp_desktop"] else " Open desktop or Coherence app windows."))
+            self.win.set_state("Running · Virtual GPU", "on", desc)
+            self.win.set_buttons([
+                ("Desktop is open" if s["rdp_desktop"] else "Open desktop", "suggested-action",
+                 None if s["rdp_desktop"] else self.virt_show),
+                ("Windows apps", None, self.show_apps),
+                ("Shut down", None, self.virt_stop),
+            ])
         else:
-            blocked = ("Shut down “Windows install / rescue” first (same disk)." if "win10" in run else
-                       "External HDMI is active on Linux. Switch External HDMI to Windows mode below first."
-                       if not hdmi_locked else "")
-            self.win.set_state("Off", "off", blocked or "Runs in a window here, with the GTX 1650 for games and apps. "
-                               "About 30 s to start.")
-            self.win.set_buttons([("Start Windows", "suggested-action", None if blocked else self.win_start)])
+            if not hdmi_locked:
+                self.win.set_state("Off", "off",
+                                   "External HDMI is active on Linux, so Virtual GPU runs right across both Linux screens. "
+                                   "Switch External HDMI to VM mode below to use GTX 1650 passthrough.")
+                self.win.set_buttons([
+                    ("Start (Virtual GPU)", "suggested-action", self.virt_start),
+                    ("Start (GTX 1650)", None, None),
+                ])
+            else:
+                self.win.set_state("Off", "off",
+                                   "GTX 1650 passes through full GPU + HDMI port. "
+                                   "Virtual GPU keeps GTX/HDMI on Linux and runs Windows/apps as Linux windows.")
+                self.win.set_buttons([
+                    ("Start (GTX 1650)", "suggested-action", self.win_start),
+                    ("Start (Virtual GPU)", None, self.virt_start),
+                ])
 
-        if not win_on:
-            self.synced = False
+        active_win = "win10-gpu" if win_gpu else "win10" if win_virt else None
+        if active_win and self.synced_vm != active_win:
+            self.synced_vm = active_win
+            self.sync_on_boot()
+        elif not active_win:
+            self.synced_vm = None
 
         # macOS card
         mp = self.pending.get("macos-igpu")
@@ -401,13 +496,13 @@ class Win(Adw.ApplicationWindow):
             self.mac.set_state("Running", "on", "On the laptop screen.")
             self.mac.set_buttons([("Force back to Linux", "destructive-action", self.mac_stop)])
         else:
-            why = ("Shut down Windows first." if win_on else
+            why = ("Shut down Windows first." if win_any else
                    "Shut down “macOS in a window” first (same disk)." if "macos" in run else "")
             self.mac.set_state("Off", "off", why or "Full screen on the laptop panel, with graphics acceleration. "
                                "The Linux desktop closes while macOS runs.")
             self.mac.set_buttons([("Start on laptop screen", "suggested-action", None if why else self.mac_start)])
 
-        # External HDMI card (GTX 1650 HDMI output <-> Windows passthrough mode)
+        # External HDMI card
         hp = self.pending.get("hdmi")
         conns = hdmi.get("conns", [])
         conn_on = [(n, m) for n, up, m in conns if up]
@@ -418,18 +513,18 @@ class Win(Adw.ApplicationWindow):
         elif mac_on:
             self.hdmi.set_state("Off", "off", "macOS has the laptop screen.")
             self.hdmi.set_buttons([("Connect external HDMI", None, None)])
-        elif win_on:
+        elif win_gpu:
             self.hdmi.set_state("With Windows", "off",
-                                "Windows currently owns the GTX 1650 and HDMI port. Use Windows Display settings, or shut down Windows to drive HDMI on Linux.")
+                                "Windows currently owns the GTX 1650 HDMI port directly. Shut down Windows (GTX) or switch to Virtual GPU to drive HDMI from Linux.")
             self.hdmi.set_buttons([("Stop Windows & connect HDMI", None, lambda: self.hdmi_enable(stop_win=True))])
         elif hdmi_live:
             self.hdmi.set_state("Active" if conn_on else "Ready", "on",
-                                f"Connected: {conn_desc} — Linux drives external HDMI." if conn_on else
+                                f"Connected: {conn_desc} — Linux drives external HDMI (compatible with Virtual GPU Windows)." if conn_on else
                                 "GTX 1650 is unlocked for Linux HDMI (no monitor plugged in right now).")
             self.hdmi.set_buttons([
                 ("Display settings", "suggested-action",
                  lambda: self.launch(["gnome-control-center", "display"], "GNOME Settings is not installed")),
-                ("Switch to Windows mode", None, self.hdmi_disable),
+                ("Switch to GTX passthrough mode", None, self.hdmi_disable),
             ])
         elif not hdmi_locked:
             self.hdmi.set_state("Relogin needed", "busy",
@@ -437,22 +532,59 @@ class Win(Adw.ApplicationWindow):
                                 "Restart desktop login once so GNOME opens the GTX 1650 for HDMI.")
             self.hdmi.set_buttons([
                 ("Apply HDMI now", "suggested-action", lambda: self.hdmi_enable(stop_win=False)),
-                ("Back to Windows mode", None, self.hdmi_disable),
+                ("Back to VM mode", None, self.hdmi_disable),
             ])
         else:
             self.hdmi.set_state("VM mode", "off",
-                                "HDMI monitor plugged in, but reserved for Windows passthrough (`win-gpu`)." if conn_on else
-                                "HDMI port is reserved for Windows passthrough so Windows starts without logging out.")
+                                "HDMI monitor plugged in, reserved for Windows GTX passthrough (or turn on here for Linux dual-screen + Virtual GPU)." if conn_on else
+                                "HDMI port is reserved for Windows GTX passthrough.")
             self.hdmi.set_buttons([("Connect external HDMI", "suggested-action", lambda: self.hdmi_enable(stop_win=False))])
 
-        # plain VMs
+        # Deskflow / Bridge card
+        dp = self.pending.get("deskflow")
+        if dp:
+            self.df.set_state(dp, "busy", "Updating Deskflow…")
+            self.df.set_buttons([("Working…", None, None)])
+        elif not df.get("installed"):
+            self.df.set_state("Missing", "off", "Install deskflow and deskflow-mode to share mouse/clipboard across Linux and Windows.")
+            self.df.set_buttons([])
+        else:
+            mode = df.get("mode", "off")
+            side = df.get("side", "right")
+            edge_lbl = EDGE_LABELS.get(side, "Right")
+            next_side = EDGES[(EDGES.index(side) + 1) % len(EDGES)] if side in EDGES else "right"
+            if mode == "local":
+                self.df.set_state(f"Laptop -> Windows ({edge_lbl})", "on",
+                                  f"CachyOS shares mouse, keyboard & clipboard across the {edge_lbl.lower()} edge to Windows (192.168.122.1)."
+                                  + ("" if df.get("running") else " (Deskflow service paused)"))
+                btns = [
+                    (f"Edge: {edge_lbl}", None, lambda ns=next_side: self.df_local(ns)),
+                    ("Sync Windows mouse" if win_any else "Windows off", "suggested-action" if win_any else None,
+                     self.df_sync_win if win_any else None),
+                    ("Linux terminal in Windows" if win_any else "Mac mode", None,
+                     self.win_terminal if win_any else (self.df_mac if df.get("has_mac") else None)),
+                ]
+                if win_any and df.get("has_mac"):
+                    btns.append(("Mac mode", None, self.df_mac))
+            elif mode == "mac":
+                rem = df.get("remote") or "Mac"
+                self.df.set_state("Mac -> Laptop", "on",
+                                  f"Following separate Mac server ({rem}). Switch to Laptop -> Windows when working standalone on CachyOS + HDMI.")
+                btns = [
+                    ("Use Laptop <-> Windows", "suggested-action", lambda s_=side: self.df_local(s_)),
+                ]
+                if win_any:
+                    btns.append(("Linux terminal in Windows", None, self.win_terminal))
+            else:
+                self.df.set_state("Off", "off", "Enable Laptop <-> Windows so one pointer glides between laptop eDP-1 and Windows external HDMI.")
+                btns = [("Use Laptop <-> Windows", "suggested-action", lambda s_=side: self.df_local(s_))]
+            self.df.set_buttons(btns)
+
+        # plain VMs in More
         for vm, (row, pill, view, act) in self.rows.items():
             on = vm in run
             p = self.pending.get(vm)
-            pill.set_label(p or ("Running" if on else "Off"))
-            for k in ("on", "off", "busy"):
-                pill.remove_css_class(k)
-            pill.add_css_class("busy" if p else "on" if on else "off")
+            set_pill(pill, p or ("Running" if on else "Off"), "busy" if p else "on" if on else "off")
             view.set_visible(on)
             act.set_label("Stop" if on else "Start")
             conflict = {"macos": "macos-igpu", "win10": "win10-gpu"}[vm] in run
@@ -500,7 +632,7 @@ class Win(Adw.ApplicationWindow):
     def toast(self, text):
         self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
 
-    def run(self, argv, vm, label, done_msg, fail_msg):
+    def run(self, argv, vm, label, done_msg, fail_msg, after_ok=None):
         """Run argv in the background, show `label` on vm's card meanwhile."""
         self.pending[vm] = label
         if self.state:
@@ -517,11 +649,13 @@ class Win(Adw.ApplicationWindow):
         def finish(rc, out):
             self.pending.pop(vm, None)
             if rc == 0:
-                self.toast(done_msg)
+                self.toast(out[-1] if done_msg is None and out else (done_msg or "Done"))
+                if after_ok:
+                    after_ok()
             elif argv[0] == "pkexec" and rc in (126, 127):
                 self.toast("Cancelled")
             else:
-                err = [l for l in out if "ERROR" in l or "error" in l] or out
+                err = [l for l in out if "ERROR" in l or "error" in l or "deskflow-mode:" in l] or out
                 self.fail(fail_msg, err[-1].replace("[gpu-mode] ", "") if err else "")
             self.poll()
             return False
@@ -540,62 +674,103 @@ class Win(Adw.ApplicationWindow):
             return
         subprocess.Popen(argv, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    def win_start(self):
-        # gpu-mode win moves the GTX and starts the VM; then open the window.
-        def done():
-            self.launch(["win-gpu"], "win-gpu is not installed")
-        self.pending["win10-gpu"] = "Starting"
-        self.render(self.state)
-
-        def work():
-            r = subprocess.run(["pkexec", GPU_MODE, "win"], capture_output=True, text=True)
-            GLib.idle_add(after, r.returncode, (r.stdout + r.stderr).strip().splitlines())
-
-        def after(rc, out):
-            self.pending.pop("win10-gpu", None)
-            if rc == 0:
-                self.toast("Windows is starting, the window opens now")
-                done()
-            elif rc in (126, 127):
-                self.toast("Cancelled")
-            else:
-                err = [l for l in out if "ERROR" in l]
-                self.fail("Windows did not start", (err[-1] if err else out[-1] if out else "").replace("[gpu-mode] ", ""))
-            self.poll()
-            return False
-
-        threading.Thread(target=work, daemon=True).start()
-
-    # ---------- Windows apps as Linux windows (WinApps, Coherence-style) ----------
-    def sync_apps(self):
-        """Start-menu programs -> app grid folder "Windows" (winapps-sync, in the background)."""
-        tool = shutil.which("winapps-sync") or os.path.expanduser("~/.local/bin/winapps-sync")
-        if not os.path.exists(tool):
+    def on_no_lg_toggled(self, sw, _pspec):
+        if self._no_lg_syncing:
             return
+        os.makedirs(PREF_DIR, exist_ok=True)
+        if sw.get_active():
+            open(NO_LG_PREF, "w").write("1\n")
+            self.toast("Looking Glass popup disabled on GTX start (use Open Looking Glass anytime)")
+        else:
+            if os.path.exists(NO_LG_PREF):
+                os.remove(NO_LG_PREF)
+            self.toast("Looking Glass will open when GTX Windows starts")
+
+    def win_start(self):
+        self.run(["pkexec", GPU_MODE, "win"], "win10-gpu", "Starting",
+                 "Windows (GTX 1650) is starting", "Windows did not start",
+                 after_ok=lambda: self.launch(["win-gpu"], "win-gpu is not installed"))
+
+    def win_show(self):
+        self.launch(["win-gpu", "desktop"], "win-gpu is not installed")
+        self.toast("Opening Looking Glass. Right Ctrl grabs / releases keyboard and mouse.")
+
+    def close_win_clients(self):
+        subprocess.run(["pkill", "-u", str(os.getuid()), "-f",
+                        r"looking-glass-client|xfreerdp3 .*(/app:|192\.168\.122\.13|Microsoft Windows)"])
+
+    def win_stop(self):
+        self.ask("Shut down Windows (GTX 1650)?", "Save your work in Windows first. The GTX 1650 goes back to Linux.",
+                 "Shut down", Adw.ResponseAppearance.DESTRUCTIVE,
+                 lambda: (self.close_win_clients(),
+                          self.run(["pkexec", GPU_MODE, "win-off"], "win10-gpu", "Shutting down",
+                                   "Windows is off, the GTX is back on Linux", "Shut down failed")))
+
+    def virt_start(self):
+        self.run(VIRSH + ["start", "win10"], "win10", "Starting",
+                 "Windows (Virtual GPU) starting — click Open desktop or Windows apps once ready",
+                 "Could not start Virtual GPU Windows")
+
+    def virt_show(self):
+        wa = shutil.which("winapps") or os.path.expanduser("~/.local/bin/winapps")
+        if not os.path.exists(wa):
+            self.fail("WinApps is not installed", "Run once: bash laptop/host/winapps/setup-winapps.sh <windows-user>")
+            return
+        subprocess.Popen(["systemd-run", "--user", "--scope", "--quiet", "--collect",
+                          f"--unit=winapps-desktop-{os.getpid()}", wa, "windows"],
+                         start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.toast("Opening Windows desktop (resizable across laptop & HDMI monitors)")
+
+    def virt_stop(self):
+        self.ask("Shut down Windows (Virtual GPU)?", "Open Windows desktop/app windows will close cleanly.",
+                 "Shut down", Adw.ResponseAppearance.DESTRUCTIVE,
+                 lambda: (self.close_win_clients(),
+                          self.run(VIRSH + ["shutdown", "win10"], "win10", "Stopping",
+                                   "Shutdown sent to Windows (Virtual GPU)", "Stop failed")))
+
+    # ---------- WinApps & Deskflow background helpers ----------
+    def sync_on_boot(self):
+        vm = self.synced_vm
+        tool = shutil.which("winapps-sync") or os.path.expanduser("~/.local/bin/winapps-sync")
+        df_tool = shutil.which("deskflow-mode")
+        want_df = (self.state or {}).get("deskflow", {}).get("mode") == "local"
+
         def work():
-            time.sleep(40)        # guest agent answers once Windows has booted
-            subprocess.run([tool, "--quiet"], capture_output=True)
+            for _ in range(45):
+                time.sleep(2)
+                r = subprocess.run(VIRSH + ["qemu-agent-command", vm, '{"execute":"guest-ping"}', "--timeout", "3"],
+                                   capture_output=True)
+                if r.returncode == 0:
+                    break
+            else:
+                return
+            if os.path.exists(tool):
+                subprocess.run([tool, "--quiet"], capture_output=True)
+            if want_df and df_tool:
+                subprocess.run([df_tool, "sync-windows"], capture_output=True)
+
         threading.Thread(target=work, daemon=True).start()
 
     def show_apps(self):
         if not winapps_entries():
             self.fail("Windows apps are not set up", "Run once: bash laptop/host/winapps/setup-winapps.sh <windows-user>")
             return
-        # GNOME app grid; the Windows programs are in its folder "Windows".
         subprocess.Popen(["gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path", "/org/gnome/Shell",
                           "--method", "org.gnome.Shell.ShowApplications"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.toast("App grid > folder “Windows”. Each app opens in its own window.")
 
-    def win_show(self):
-        self.launch(["win-gpu"], "win-gpu is not installed")
-        self.toast("Opening the Windows window. Right Ctrl grabs / releases keyboard and mouse.")
+    def df_local(self, side):
+        self.run(["deskflow-mode", "local", "--side", side], "deskflow", "Applying", None, "Deskflow switch failed")
 
-    def win_stop(self):
-        self.ask("Shut down Windows?", "Save your work in Windows first. The GTX 1650 goes back to Linux.",
-                 "Shut down", Adw.ResponseAppearance.DESTRUCTIVE,
-                 lambda: (subprocess.run(["pkill", "-u", str(os.getuid()), "-f", "looking-glass-client|xfreerdp3 .*/app:"]),
-                          self.run(["pkexec", GPU_MODE, "win-off"], "win10-gpu", "Shutting down",
-                                   "Windows is off, the GTX is back on Linux", "Shut down failed")))
+    def df_mac(self):
+        self.run(["deskflow-mode", "mac"], "deskflow", "Switching", None, "Deskflow switch failed")
+
+    def df_sync_win(self):
+        self.run(["deskflow-mode", "sync-windows"], "deskflow", "Syncing", None, "Could not sync Windows Deskflow")
+
+    def win_terminal(self):
+        self.run(["deskflow-mode", "win-terminal"], "deskflow", "Opening",
+                 "Opened CachyOS terminal window on Windows", "Could not open Linux terminal in Windows")
 
     def mac_start(self):
         radios = self.radios.get_active()
@@ -625,16 +800,16 @@ class Win(Adw.ApplicationWindow):
                + "Log back in and external HDMI appears in Settings → Displays.")
         def go():
             if stop_win:
-                subprocess.run(["pkill", "-u", str(os.getuid()), "-f", "looking-glass-client|xfreerdp3 .*/app:"])
+                self.close_win_clients()
             self.run(["pkexec", GPU_MODE, "hdmi-on-bg"] + (["--stop-win"] if stop_win else []),
                      "hdmi", "Switching", "Restarting desktop for HDMI…", "HDMI switch failed")
         self.ask("Connect external HDMI on Linux?", msg, "Connect HDMI", Adw.ResponseAppearance.SUGGESTED, go)
 
     def hdmi_disable(self):
-        self.ask("Switch back to Windows passthrough mode?",
+        self.ask("Switch back to GTX passthrough mode?",
                  "The Linux desktop restarts so GNOME releases the GTX 1650 — "
                  "open Linux apps will close, so save your work first.\n\n"
-                 "After logging back in, external HDMI is disabled on Linux so Windows can start without logout.",
+                 "After logging back in, external HDMI is disabled on Linux so Windows (GTX 1650) can start without logout.",
                  "Switch to VM mode", Adw.ResponseAppearance.SUGGESTED,
                  lambda: self.run(["pkexec", GPU_MODE, "hdmi-off-bg"],
                                   "hdmi", "Switching", "Restarting desktop for VM mode…", "Switch failed"))
@@ -646,7 +821,6 @@ class Win(Adw.ApplicationWindow):
             self.run(VIRSH + ["start", vm], vm, "Starting", f"{vm} started, open the viewer", "Start failed")
 
     def open_vnc(self, vm):
-        # VNC listens on 127.0.0.1 only. The password is in the domain XML (readable by group libvirt).
         try:
             xml = subprocess.run(VIRSH + ["dumpxml", "--security-info", vm], capture_output=True, text=True).stdout
             pw = xml.split("passwd='", 1)[1].split("'", 1)[0]

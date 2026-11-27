@@ -18,7 +18,7 @@ to the hidden one and exits: no window appears. --open checks first and says wha
 """
 import base64, json, os, re, shutil, subprocess, sys, time
 
-VM = "win10-gpu"
+WIN_VMS = ("win10-gpu", "win10")
 VIRSH = ["virsh", "-c", "qemu:///system"]
 HOME = os.path.expanduser("~")
 APPS = f"{HOME}/.local/share/winapps/apps"
@@ -27,6 +27,19 @@ WINAPPS = f"{HOME}/.local/bin/winapps"
 CONF = f"{HOME}/.config/winapps/winapps.conf"
 PREFIX = "winapps-"          # our launchers; WinApps' own ones have no prefix
 QUIET = "--quiet" in sys.argv
+_ACTIVE_VM = None
+
+
+def active_vm():
+    global _ACTIVE_VM
+    if _ACTIVE_VM is None:
+        try:
+            out = subprocess.run(VIRSH + ["list", "--name"], capture_output=True, text=True, timeout=10).stdout
+            running = {line.strip() for line in out.splitlines() if line.strip()}
+            _ACTIVE_VM = next((vm for vm in WIN_VMS if vm in running), WIN_VMS[0])
+        except (OSError, subprocess.TimeoutExpired):
+            _ACTIVE_VM = WIN_VMS[0]
+    return _ACTIVE_VM
 
 PS = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -85,10 +98,10 @@ def say(*a):
 
 
 def qga(cmd):
-    r = subprocess.run(VIRSH + ["qemu-agent-command", VM, json.dumps(cmd), "--timeout", "60"],
+    r = subprocess.run(VIRSH + ["qemu-agent-command", active_vm(), json.dumps(cmd), "--timeout", "60"],
                        capture_output=True, text=True, timeout=90)
     if r.returncode:
-        raise SystemExit(f"winapps-sync: guest agent: {r.stderr.strip() or 'no answer'} (is Windows running?)")
+        raise SystemExit(f"winapps-sync: guest agent ({active_vm()}): {r.stderr.strip() or 'no answer'} (is Windows running?)")
     return json.loads(r.stdout)["return"]
 
 
@@ -191,7 +204,7 @@ def open_app(aid, files):
             if out.strip().isdigit() and int(out.strip()) > 0:
                 subprocess.run(["notify-send", "-a", "Windows", "-i", f"{APPS}/{aid}/icon.png",
                                 f"{name} is open on the Windows desktop",
-                                "Close it there (VM Switch > Show desktop), or sign out of the Windows desktop, "
+                                "Close it on the Windows desktop (or sign out there), "
                                 "then click it again."])
                 return
         except (SystemExit, OSError, subprocess.TimeoutExpired):

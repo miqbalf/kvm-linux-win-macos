@@ -15,8 +15,15 @@ if [ ! -e /etc/environment.d/90-gtx-free.conf.disabled ]; then
   install -D -m 644 laptop/host/session/90-gtx-free.conf /etc/environment.d/90-gtx-free.conf
 fi
 install -m 755 laptop/host/gtx-run /usr/local/bin/gtx-run
-# Apply to the running session too (new apps and restarted services); a log out/in applies it everywhere.
-[ -n "${SUDO_USER:-}" ] && sudo -u "$SUDO_USER" XDG_RUNTIME_DIR=/run/user/$(id -u "$SUDO_USER") systemctl --user daemon-reload 2>/dev/null || true
+install -m 755 laptop/host/wexec /usr/local/bin/wexec
+install -m 755 laptop/host/deskflow-mode /usr/local/bin/deskflow-mode
+if [ -n "${SUDO_USER:-}" ]; then
+  UHOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+  systemctl_u=(sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" systemctl --user)
+  "${systemctl_u[@]}" daemon-reload 2>/dev/null || true
+  [ -x "$UHOME/.local/bin/winapps-sync" ] && install -m 755 -o "$SUDO_USER" -g "$SUDO_USER" laptop/host/winapps/winapps-sync "$UHOME/.local/bin/winapps-sync"
+  install -D -m 644 -o "$SUDO_USER" -g "$SUDO_USER" laptop/host/looking-glass/client.ini "$UHOME/.config/looking-glass/client.ini"
+fi
 install -m 755 laptop/host/vm-switch/vm-switch /usr/local/bin/vm-switch
 install -m 755 laptop/host/winapps/winapps-sync /usr/local/bin/winapps-sync   # Windows apps -> app grid
 install -m 644 laptop/host/vm-switch/vm-switch.desktop /usr/local/share/applications/vm-switch.desktop

@@ -102,3 +102,13 @@ The Windows VM reaches the Mac through the VM network (NAT), so the Mac sees it 
 - Allowing Deskflow's input starts `xdg-desktop-portal-gnome`; before the session-wide Intel-only setting
   (docs/04) that portal held the GTX and blocked Windows from starting.
 - Pointer does not leave the Mac: Deskflow needs Accessibility permission on the Mac.
+
+## Standalone Laptop <-> Windows Mode & Linux Terminal Overlay (`deskflow-mode`)
+When working on just the laptop (Linux on `eDP-1`) + an external HDMI monitor (Windows on GTX 1650 passthrough)
+without the separate Mac, switch Deskflow into **Local Server mode**:
+- **In VM Switch → Mouse & Terminal Bridge (Deskflow):** click **Use Laptop <-> Windows** (pick edge `Right`, `Above`, `Left`, or `Below`).
+- **From terminal:**
+  - `deskflow-mode local [--side right|up|left|down]` — backs up your Mac client config (`~/.config/Deskflow/Deskflow.conf.mac`), configures CachyOS as Deskflow 1.27 server (`nitro`, `[internalConfig]` grid + `[computer_windows]` + `deskflow-server.conf` with `Ctrl+Super+Arrow` hotkeys), restarts Deskflow, and syncs Windows over QGA to `192.168.122.1`.
+  - `deskflow-mode sync-windows` — updates Windows `Deskflow.conf` + exchanges TLS SHA-256 fingerprints (`C:\ProgramData\Deskflow\tls\` <-> `~/.config/Deskflow/tls/trusted-clients`).
+  - `deskflow-mode mac` — restores the saved `Deskflow.conf.mac` client config on both CachyOS and Windows.
+  - `deskflow-mode win-terminal` (**Linux terminal in Windows** in VM Switch) — creates a local-VM-only key (`from="192.168.122.13"`) and opens a live CachyOS SSH terminal (`wt.exe` / `cmd.exe`, plus a `Linux Terminal (CachyOS)` Desktop shortcut) right over the Windows passthrough screen.

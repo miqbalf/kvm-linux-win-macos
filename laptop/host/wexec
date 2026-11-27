@@ -1,8 +1,24 @@
 #!/usr/bin/env python3
-# wexec <vm> <powershell command>: run PowerShell in a Windows guest via the QEMU guest agent, print output.
+# wexec <vm|auto> <powershell command>: run PowerShell in a Windows guest via QEMU guest agent.
 import sys, json, subprocess, time, base64
-vm, cmd = sys.argv[1], " ".join(sys.argv[2:])
-def qga(o): return json.loads(subprocess.check_output(["virsh","-c","qemu:///system","qemu-agent-command",vm,json.dumps(o),"--timeout","30"]))["return"]
+
+VIRSH = ["virsh", "-c", "qemu:///system"]
+
+def resolve_vm(name):
+    if name != "auto":
+        return name
+    out = subprocess.check_output(VIRSH + ["list", "--name"], text=True)
+    running = {line.strip() for line in out.splitlines() if line.strip()}
+    for candidate in ("win10-gpu", "win10"):
+        if candidate in running:
+            return candidate
+    raise SystemExit("wexec: neither win10-gpu nor win10 is running")
+
+if len(sys.argv) < 3:
+    raise SystemExit("usage: wexec <win10|win10-gpu|auto> <powershell command>")
+
+vm, cmd = resolve_vm(sys.argv[1]), " ".join(sys.argv[2:])
+def qga(o): return json.loads(subprocess.check_output(VIRSH + ["qemu-agent-command",vm,json.dumps(o),"--timeout","30"]))["return"]
 pid = qga({"execute":"guest-exec","arguments":{"path":"powershell.exe","arg":["-NoProfile","-NonInteractive","-Command",cmd],"capture-output":True}})["pid"]
 for _ in range(1200):
     st = qga({"execute":"guest-exec-status","arguments":{"pid":pid}})

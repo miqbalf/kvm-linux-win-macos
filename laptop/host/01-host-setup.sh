@@ -123,6 +123,7 @@ install -m 755 laptop/host/win-gpu /usr/local/bin/win-gpu
 install -D -m 644 laptop/host/session/90-gtx-free.conf /etc/environment.d/90-gtx-free.conf
 install -m 755 laptop/host/gtx-run /usr/local/bin/gtx-run
 install -m 755 laptop/host/wexec /usr/local/bin/wexec
+install -m 755 laptop/host/deskflow-mode /usr/local/bin/deskflow-mode
 install -D -m 644 laptop/host/looking-glass/win-gpu.desktop /usr/local/share/applications/win-gpu.desktop
 echo "launcher: 'Windows (GTX 1650)' in the app grid, or win-gpu / win-gpu stop"
 bash laptop/host/vm-switch/install.sh

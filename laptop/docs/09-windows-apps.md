@@ -23,11 +23,15 @@ are shared. Windows keeps drawing its own title bars.
 | not here | Windows notification-area icons in the Linux top bar; file associations only for WinApps' built-in apps |
 
 ## Use
-1. Start Windows: VM Switch > **Start Windows**. About 40 s later VM Switch syncs the Start-menu programs
-   into the app grid (folder **Windows**, real icons).
-2. Open a program: app grid > **Windows** > click it (or VM Switch > **Windows apps**). It opens in its own
+1. Start Windows in **either** mode:
+   - **VM Switch → Start (GTX 1650)** (`win10-gpu`): full GPU + physical HDMI output.
+   - **VM Switch → Start (Virtual GPU)** (`win10`): keeps Linux GTX 1650 & HDMI active so Windows apps and resizable desktops live side-by-side with Linux windows on any monitor.
+   Once Windows answers the guest agent, VM Switch automatically runs `winapps-sync` to populate the app grid folder **Windows** (`winapps-sync` detects `win10-gpu` or `win10` automatically).
+2. Open a program: app grid > **Windows** > click it (or **VM Switch → Windows apps**). It opens in its own
    window. The first one takes a few seconds (RDP login), the next ones are quick.
-3. Whole Windows desktop instead: VM Switch > **Show desktop** (Looking Glass, best for games and video).
+3. Whole Windows desktop instead:
+   - On Virtual GPU (`win10`): **VM Switch → Open desktop** (or `winapps windows`) opens a resizable FreeRDP desktop window (`+dynamic-resolution`) across Linux monitors.
+   - On GTX passthrough (`win10-gpu`): **VM Switch → Open Looking Glass** (`win-gpu desktop`), or view directly on external HDMI.
 
 Terminal: `winapps-sync` (sync the list now), `winapps windows` (whole desktop over RDP),
 `winapps manual notepad.exe`, `winapps check`.

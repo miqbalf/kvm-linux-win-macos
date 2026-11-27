@@ -1,26 +1,46 @@
 #!/bin/bash
-# win-gpu - Windows on the GTX 1650 in a Looking Glass window (run as the desktop user).
-#   win-gpu          start win10-gpu if needed (asks for the password), then open the window
-#   win-gpu stop     shut Windows down; the GTX goes back to the host
-# Closing the window does not stop Windows: run `win-gpu` again to reopen it.
+# win-gpu - Windows on the GTX 1650 (Looking Glass window, or external HDMI directly).
+#   win-gpu [start]        start win10-gpu if needed, then open Looking Glass unless --no-lg / preference skips it
+#   win-gpu desktop        start win10-gpu if needed and always open Looking Glass
+#   win-gpu stop           shut Windows down; the GTX goes back to the host
 set -uo pipefail
 VM=win10-gpu
+PREF="${XDG_CONFIG_HOME:-$HOME/.config}/vm-switch/no-looking-glass"
 note() { notify-send -a "Windows (GTX)" "$1" 2>/dev/null; echo "$1"; }
 root() { if [ -t 0 ]; then sudo "$@"; else pkexec "$@"; fi; }
 running() { [ "$(virsh -c qemu:///system domstate $VM 2>/dev/null)" = running ]; }
 
-case "${1:-start}" in
+open_lg() {
+  pgrep -u "$USER" -f looking-glass-client >/dev/null && { note "Looking Glass is already open"; exit 0; }
+  exec looking-glass-client
+}
+
+cmd="${1:-start}"
+no_lg=0
+[ "${2:-}" = "--no-lg" ] && no_lg=1
+[ "$cmd" = "--no-lg" ] && { cmd=start; no_lg=1; }
+
+case "$cmd" in
   stop)
     running || { note "Windows is not running"; exit 0; }
     note "Shutting Windows down, the GTX returns to Linux"
     pkill -u "$USER" -f looking-glass-client
     root /usr/local/sbin/gpu-mode win-off ;;
+  desktop|lg)
+    if ! running; then
+      note "Starting Windows on the GTX 1650 (about 30 s)"
+      root /usr/local/sbin/gpu-mode win || { note "Windows did not start: journalctl -t gpu-mode"; exit 1; }
+    fi
+    open_lg ;;
   start)
     if ! running; then
       note "Starting Windows on the GTX 1650 (about 30 s)"
       root /usr/local/sbin/gpu-mode win || { note "Windows did not start: journalctl -t gpu-mode"; exit 1; }
     fi
-    pgrep -u "$USER" -f looking-glass-client >/dev/null && { note "Looking Glass is already open"; exit 0; }
-    exec looking-glass-client ;;
-  *) echo "usage: win-gpu [start|stop]"; exit 2 ;;
+    if [ "$no_lg" = 1 ] || [ -e "$PREF" ]; then
+      note "Windows running on GTX 1650 (external HDMI mode — Looking Glass window skipped)"
+      exit 0
+    fi
+    open_lg ;;
+  *) echo "usage: win-gpu [start [--no-lg]|desktop|stop]"; exit 2 ;;
 esac

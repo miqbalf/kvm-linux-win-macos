@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+"""deskflow-mode - switch Deskflow cleanly between Local Server (nitro <-> windows) and Mac Client.
+
+Also syncs Windows' Deskflow config/TLS trust over QEMU guest agent (`wexec auto`) and can open
+a CachyOS SSH terminal window directly inside the running Windows desktop session.
+"""
+import argparse, base64, configparser, getpass, json, os, re, shutil, subprocess, sys, time
+
+VIRSH = ["virsh", "-c", "qemu:///system"]
+WIN_VMS = ("win10-gpu", "win10")
+HOST_BRIDGE_IP = "192.168.122.1"
+WIN_VM_IP = "192.168.122.13"
+OPPOSITE = {"right": "left", "left": "right", "up": "down", "down": "up"}
+
+HOME = os.path.expanduser("~")
+CFG_DIR = f"{HOME}/.config/Deskflow"
+CONF = f"{CFG_DIR}/Deskflow.conf"
+MAC_CONF = f"{CFG_DIR}/Deskflow.conf.mac"
+SRV_CONF = f"{CFG_DIR}/deskflow-server.conf"
+SIDE_PREF = f"{HOME}/.config/vm-switch/deskflow-side"
+TLS_DIR = f"{CFG_DIR}/tls"
+CERT = f"{TLS_DIR}/deskflow.pem"
+TRUSTED_CLIENTS = f"{TLS_DIR}/trusted-clients"
+WINAPPS_CONF = f"{HOME}/.config/winapps/winapps.conf"
+
+
+def active_win_vm():
+    try:
+        out = subprocess.run(VIRSH + ["list", "--name"], capture_output=True, text=True, timeout=5).stdout
+        run = {line.strip() for line in out.splitlines() if line.strip()}
+        return next((vm for vm in WIN_VMS if vm in run), "")
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def read_ini(path):
+    cp = configparser.ConfigParser(interpolation=None)
+    cp.optionxform = str
+    if os.path.exists(path):
+        cp.read(path)
+    return cp
+
+
+def write_ini(path, cp):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        cp.write(f, space_around_delimiters=False)
+
+
+def saved_side():
+    try:
+        s = open(SIDE_PREF).read().strip()
+        if s in OPPOSITE:
+            return s
+    except OSError:
+        pass
+    if os.path.exists(SRV_CONF):
+        txt = open(SRV_CONF).read()
+        for side in OPPOSITE:
+            if f"\t\t{side} = windows" in txt:
+                return side
+    return "right"
+
+
+def cert_fp(pem_path):
+    if not os.path.exists(pem_path):
+        return ""
+    r = subprocess.run(["openssl", "x509", "-in", pem_path, "-noout", "-fingerprint", "-sha256"],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or "=" not in r.stdout:
+        return ""
+    hex_fp = r.stdout.split("=", 1)[1].strip().replace(":", "").lower()
+    return f"v2:sha256:{hex_fp}"
+
+
+def add_trusted_fingerprint(path, fp):
+    if not fp:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    existing = open(path).read().splitlines() if os.path.exists(path) else []
+    if fp not in existing:
+        existing.append(fp)
+        with open(path, "w") as f:
+            f.write("\n".join(existing) + "\n")
+
+
+def rdp_user():
+    if os.path.exists(WINAPPS_CONF):
+        m = re.search(r'^\s*RDP_USER="?([^"\n]*)"?', open(WINAPPS_CONF).read(), re.M)
+        if m and m.group(1):
+            return m.group(1)
+    return getpass.getuser()
+
+
+def guest_ps(vm, script, timeout=60):
+    enc = base64.b64encode(script.encode("utf-16-le")).decode()
+    cmd = {"execute": "guest-exec", "arguments": {"path": "powershell.exe", "capture-output": True,
+           "arg": ["-NoProfile", "-NonInteractive", "-EncodedCommand", enc]}}
+    r = subprocess.run(VIRSH + ["qemu-agent-command", vm, json.dumps(cmd), "--timeout", "30"],
+                       capture_output=True, text=True, timeout=35)
+    if r.returncode:
+        raise RuntimeError(r.stderr.strip() or f"{vm} guest agent unavailable")
+    pid = json.loads(r.stdout)["return"]["pid"]
+    for _ in range(timeout * 2):
+        sr = subprocess.run(VIRSH + ["qemu-agent-command", vm,
+                            json.dumps({"execute": "guest-exec-status", "arguments": {"pid": pid}}), "--timeout", "15"],
+                            capture_output=True, text=True, timeout=20)
+        st = json.loads(sr.stdout)["return"]
+        if st.get("exited"):
+            out = base64.b64decode(st.get("out-data", "")).decode("utf-8", "replace")
+            err = base64.b64decode(st.get("err-data", "")).decode("utf-8", "replace")
+            if st.get("exitcode", 0) != 0:
+                raise RuntimeError((err or out).strip() or "PowerShell command failed")
+            return out
+        time.sleep(0.5)
+    raise RuntimeError("guest command timed out")
+
+
+def wayland_env():
+    env = os.environ.copy()
+    if env.get("WAYLAND_DISPLAY") and env.get("DBUS_SESSION_BUS_ADDRESS"):
+        return env
+    r = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True)
+    for line in r.stdout.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            if k in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "DBUS_SESSION_BUS_ADDRESS"):
+                env.setdefault(k, v)
+    return env
+
+
+EDGE_CELL = {"right": "9", "left": "7", "up": "3", "down": "13"}
+
+
+def stop_deskflow():
+    subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "deskflow-core"], capture_output=True)
+    subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "deskflow"], capture_output=True)
+    time.sleep(0.5)
+
+
+def start_deskflow():
+    bin_df = shutil.which("deskflow")
+    if not bin_df:
+        return False
+    env = wayland_env()
+    if not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
+        return False
+    subprocess.Popen([bin_df], env=env, start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return True
+
+
+def backup_mac_conf():
+    if not os.path.exists(CONF):
+        return
+    cp = read_ini(CONF)
+    cm = cp.get("core", "coreMode", fallback="0")
+    rh = cp.get("client", "remoteHost", fallback="").strip()
+    if rh and rh not in (HOST_BRIDGE_IP, "nitro", "127.0.0.1", "localhost") and (cm == "1" or not os.path.exists(MAC_CONF)):
+        cp.set("core", "coreMode", "1")
+        cp.set("core", "computerName", "nitro")
+        write_ini(MAC_CONF, cp)
+
+
+def ensure_computer(cp, name):
+    sec = f"computer_{name}"
+    if not cp.has_section(sec):
+        cp.add_section(sec)
+    defaults = {
+        "halfDuplexCapsLock": "false",
+        "halfDuplexNumLock": "false",
+        "halfDuplexScrollLock": "false",
+        "modifierAlt": "alt",
+        "modifierAltGr": "altgr",
+        "modifierCtrl": "ctrl",
+        "modifierMeta": "meta",
+        "modifierShift": "shift",
+        "modifierSuper": "super",
+        "name": name,
+        "switchCornerBottomLeft": "false",
+        "switchCornerBottomRight": "false",
+        "switchCornerSize": "0",
+        "switchCornerTopLeft": "false",
+        "switchCornerTopRight": "false",
+        "xtestIsXineramaUnaware": "false",
+    }
+    for k, v in defaults.items():
+        if not cp.has_option(sec, k):
+            cp.set(sec, k, v)
+
+
+def write_server_layout(side):
+    opp = OPPOSITE[side]
+    os.makedirs(os.path.dirname(SIDE_PREF), exist_ok=True)
+    open(SIDE_PREF, "w").write(side + "\n")
+    os.makedirs(CFG_DIR, exist_ok=True)
+    with open(SRV_CONF, "w") as f:
+        f.write(
+            "section: links\n"
+            "\tnitro:\n"
+            f"\t\t{side} = windows\n"
+            "\twindows:\n"
+            f"\t\t{opp} = nitro\n"
+            "end\n\n"
+            "section: options\n"
+            "\tkeystroke(control+super+right) = switchInDirection(right)\n"
+            "\tkeystroke(control+super+left) = switchInDirection(left)\n"
+            "\tkeystroke(control+super+up) = switchInDirection(up)\n"
+            "\tkeystroke(control+super+down) = switchInDirection(down)\n"
+            "end\n"
+        )
+
+
+def set_local(side):
+    stop_deskflow()
+    backup_mac_conf()
+    write_server_layout(side)
+    cp = read_ini(CONF)
+    for sec in ("core", "server", "security", "gui", "internalConfig"):
+        if not cp.has_section(sec):
+            cp.add_section(sec)
+    ensure_computer(cp, "nitro")
+    ensure_computer(cp, "windows")
+    cp.set("core", "coreMode", "2")
+    cp.set("core", "computerName", "nitro")
+    cp.set("core", "port", "24800")
+    cp.set("internalConfig", "hotkeys\\size", "0")
+    cp.set("internalConfig", "screens\\size", "15")
+    for idx in range(1, 16):
+        val = "nitro" if idx == 8 else ("windows" if str(idx) == EDGE_CELL[side] else "")
+        cp.set("internalConfig", f"screens\\{idx}\\name", val)
+    cp.set("server", "externalConfig", "true")
+    cp.set("server", "externalConfigFile", SRV_CONF)
+    cp.set("server", "enableClipboard", "true")
+    cp.set("server", "enableSwitchDelay", "true")
+    cp.set("server", "switchDelay", "80")
+    cp.set("server", "relativeMouseMoves", "false")
+    cp.set("server", "win32KeepForeground", "false")
+    cp.set("security", "tlsEnabled", "true")
+    cp.set("security", "checkPeerFingerprints", "true")
+    if os.path.exists(CERT):
+        cp.set("security", "certificate", CERT)
+    cp.set("gui", "enableUpdateCheck", "false")
+    cp.set("gui", "startCoreWithGui", "true")
+    cp.set("gui", "closeToTray", "true")
+    cp.set("gui", "autoHide", "true")
+    cp.set("gui", "shownServerFirstStartMessage", "true")
+    write_ini(CONF, cp)
+    start_deskflow()
+
+
+def set_mac():
+    if not os.path.exists(MAC_CONF):
+        raise RuntimeError("No Mac client config backup (Deskflow.conf.mac) found. Set client mode in Deskflow once.")
+    stop_deskflow()
+    shutil.copy2(MAC_CONF, CONF)
+    start_deskflow()
+
+
+# Runs a command inside the logged-in user's desktop/console Windows session cleanly from SYSTEM (QGA).
+WIN_LAUNCH_PS = r"""
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class WL {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct SI { public int cb; public string r, d, t; public int x,y,xs,ys,xc,yc,fa,fl; public short sw, r2; public IntPtr r3, i, o, e; }
+  [StructLayout(LayoutKind.Sequential)] public struct PI { public IntPtr hp, ht; public int pid, tid; }
+  [DllImport("wtsapi32.dll", SetLastError=true)] static extern bool WTSQueryUserToken(int s, out IntPtr t);
+  [DllImport("userenv.dll", SetLastError=true)] static extern bool CreateEnvironmentBlock(out IntPtr e, IntPtr t, bool i);
+  [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr t, string a, string c, IntPtr pa, IntPtr ta, bool ih, int f, IntPtr e, string d, ref SI si, out PI pi);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr h);
+  public static int Run(int session, string cmd) {
+    IntPtr t; if (!WTSQueryUserToken(session, out t)) return -Marshal.GetLastWin32Error();
+    IntPtr env; CreateEnvironmentBlock(out env, t, false);
+    var si = new SI(); si.cb = Marshal.SizeOf(si); si.d = "winsta0\\default"; PI pi;
+    bool ok = CreateProcessAsUser(t, null, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x400, env, null, ref si, out pi);
+    int err = ok ? pi.pid : -Marshal.GetLastWin32Error();
+    if (ok) { CloseHandle(pi.hp); CloseHandle(pi.ht); }
+    CloseHandle(t);
+    return err;
+  }
+}
+'@
+function Start-InUserSession([string]$user, [string]$cmd) {
+  $sid = $null
+  foreach ($l in (query session 2>$null)) {
+    if ($l -match "^\s*>?(console|rdp-tcp#\d+)\s+$([regex]::Escape($user))\s+(\d+)\s+Active") { $sid = [int]$matches[2]; break }
+  }
+  if ($sid -eq $null) { return 'NOSESSION' }
+  return 'PID ' + [WL]::Run($sid, $cmd)
+}
+"""
+
+
+def sync_windows(vm=None):
+    vm = vm or active_win_vm()
+    if not vm:
+        return "skipped (no Windows VM running)"
+    cp = read_ini(CONF)
+    mode = cp.get("core", "coreMode", fallback="0")
+    wuser = rdp_user()
+    host_fp = cert_fp(CERT)
+    if mode == "2":
+        ps = rf"""
+$ErrorActionPreference = 'Stop'
+$user = '{wuser}'
+$dfDir = "C:\Users\$user\AppData\Roaming\Deskflow"
+$conf = "$dfDir\Deskflow.conf"
+$mac = "$dfDir\Deskflow.conf.mac"
+if (-not (Test-Path $dfDir)) {{ New-Item -ItemType Directory -Force $dfDir | Out-Null }}
+if ((Test-Path $conf) -and -not (Test-Path $mac)) {{ Copy-Item $conf $mac }}
+$ini = if (Test-Path $conf) {{ Get-Content $conf }} else {{ @() }}
+function Set-IniKey($lines, $sec, $key, $val) {{
+  $out = New-Object System.Collections.Generic.List[string]
+  $cur = ''; $done = $false; $inSec = $false
+  foreach ($l in $lines) {{
+    if ($l -match '^\[(.+)\]$') {{
+      if ($inSec -and -not $done) {{ $out.Add("$key=$val"); $done = $true }}
+      $cur = $matches[1]; $inSec = ($cur -eq $sec)
+    }} elseif ($inSec -and $l -match ("^" + [regex]::Escape($key) + "=")) {{
+      $out.Add("$key=$val"); $done = $true; continue
+    }}
+    $out.Add($l)
+  }}
+  if (-not $done) {{
+    if (-not ($lines | ? {{ $_ -eq "[$sec]" }})) {{ $out.Add("[$sec]") }}
+    $out.Add("$key=$val")
+  }}
+  return $out.ToArray()
+}}
+$ini = Set-IniKey $ini 'client' 'remoteHost' '{HOST_BRIDGE_IP}'
+$ini = Set-IniKey $ini 'core' 'computerName' 'windows'
+$ini = Set-IniKey $ini 'core' 'coreMode' '1'
+$ini = Set-IniKey $ini 'gui' 'enableUpdateCheck' 'false'
+$ini = Set-IniKey $ini 'gui' 'startCoreWithGui' 'true'
+$ini = Set-IniKey $ini 'security' 'tlsEnabled' 'true'
+$ini = Set-IniKey $ini 'security' 'checkPeerFingerprints' 'true'
+[IO.File]::WriteAllLines($conf, [string[]]$ini)
+$fp = '{host_fp}'
+foreach ($tlsDir in @('C:\ProgramData\Deskflow\tls', "$dfDir\tls")) {{
+  if (-not (Test-Path $tlsDir)) {{ New-Item -ItemType Directory -Force $tlsDir | Out-Null }}
+  $ts = "$tlsDir\trusted-servers"
+  if ($fp) {{
+    $cur = if (Test-Path $ts) {{ Get-Content $ts }} else {{ @() }}
+    if ($cur -notcontains $fp) {{
+      $lines = New-Object System.Collections.Generic.List[string]
+      foreach ($l in $cur) {{ if ($l) {{ $lines.Add($l) }} }}
+      $lines.Add($fp)
+      [IO.File]::WriteAllLines($ts, $lines.ToArray())
+    }}
+  }}
+}}
+$wfp = ''
+$pem = if (Test-Path 'C:\ProgramData\Deskflow\tls\deskflow.pem') {{ 'C:\ProgramData\Deskflow\tls\deskflow.pem' }} else {{ "$dfDir\tls\deskflow.pem" }}
+if (Test-Path $pem) {{
+  $rawPem = Get-Content $pem -Raw
+  if ($rawPem -match '(?s)-----BEGIN CERTIFICATE-----\s*([A-Za-z0-9+/=\r\n]+?)\s*-----END CERTIFICATE-----') {{
+    try {{
+      $b64 = $matches[1] -replace '\s',''
+      $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([Convert]::FromBase64String($b64))
+      $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($cert.RawData)
+      $wfp = 'v2:sha256:' + (($sha | ForEach-Object {{ $_.ToString('x2') }}) -join '')
+    }} catch {{}}
+  }}
+}}
+""" + WIN_LAUNCH_PS + r"""
+Get-Process deskflow,deskflow-core -EA 0 | Stop-Process -Force -EA 0
+if (Get-Service Deskflow -EA 0) { Restart-Service Deskflow -EA 0 }
+$exe = 'C:\Program Files\Deskflow\deskflow.exe'
+$res = if (Test-Path $exe) { Start-InUserSession $user "`"$exe`"" } else { 'NOEXE' }
+Write-Output ("WFP=" + $wfp)
+Write-Output ("LAUNCH=" + $res)
+"""
+        out = guest_ps(vm, ps)
+        for line in out.splitlines():
+            if line.startswith("WFP="):
+                wfp = line.split("=", 1)[1].strip()
+                if wfp.startswith("v2:sha256:"):
+                    add_trusted_fingerprint(TRUSTED_CLIENTS, wfp)
+        return f"synced {vm} -> {HOST_BRIDGE_IP}"
+    elif mode == "1":
+        ps = rf"""
+$ErrorActionPreference = 'Stop'
+$user = '{wuser}'
+$dfDir = "C:\Users\$user\AppData\Roaming\Deskflow"
+$conf = "$dfDir\Deskflow.conf"
+$mac = "$dfDir\Deskflow.conf.mac"
+if (-not (Test-Path $mac)) {{ Write-Output 'NO_MAC_BACKUP'; exit 0 }}
+Copy-Item $mac $conf -Force
+""" + WIN_LAUNCH_PS + r"""
+Get-Process deskflow,deskflow-core -EA 0 | Stop-Process -Force -EA 0
+if (Get-Service Deskflow -EA 0) { Restart-Service Deskflow -EA 0 }
+$exe = 'C:\Program Files\Deskflow\deskflow.exe'
+$res = if (Test-Path $exe) { Start-InUserSession $user "`"$exe`"" } else { 'NOEXE' }
+Write-Output ("LAUNCH=" + $res)
+"""
+        out = guest_ps(vm, ps)
+        if "NO_MAC_BACKUP" in out:
+            return f"{vm} has no Deskflow.conf.mac backup (kept current)"
+        return f"restored {vm} Mac client"
+    return "Deskflow is inactive on host"
+
+
+def ensure_win_ssh_key(wuser):
+    ssh_dir = f"{HOME}/.ssh"
+    key = f"{ssh_dir}/id_win_kvm"
+    pub = f"{key}.pub"
+    auth = f"{ssh_dir}/authorized_keys"
+    os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+    if not os.path.exists(key):
+        subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-C", "win-kvm-overlay", "-f", key], check=True)
+    pub_line = open(pub).read().strip()
+    restricted = f'from="{WIN_VM_IP}",no-agent-forwarding,no-X11-forwarding {pub_line}'
+    cur = open(auth).read().splitlines() if os.path.exists(auth) else []
+    if not any(pub_line in l for l in cur):
+        cur.append(restricted)
+        with open(auth, "w") as f:
+            f.write("\n".join(cur) + "\n")
+        os.chmod(auth, 0o600)
+    host_pub = ""
+    for candidate in ("/etc/ssh/ssh_host_ed25519_key.pub", "/etc/ssh/ssh_host_ecdsa_key.pub", "/etc/ssh/ssh_host_rsa_key.pub"):
+        if os.path.exists(candidate):
+            parts = open(candidate).read().strip().split()
+            if len(parts) >= 2:
+                host_pub = f"{HOST_BRIDGE_IP} {parts[0]} {parts[1]}"
+                break
+    return open(key).read(), host_pub, wuser
+
+
+def open_win_terminal():
+    vm = active_win_vm()
+    if not vm:
+        raise RuntimeError("No Windows VM is running")
+    wuser = rdp_user()
+    luser = getpass.getuser()
+    priv_key, host_pub, _ = ensure_win_ssh_key(wuser)
+    priv_b64 = base64.b64encode(priv_key.encode()).decode()
+    kh_b64 = base64.b64encode((host_pub + "\n").encode() if host_pub else b"").decode()
+    ps = rf"""
+$ErrorActionPreference = 'Stop'
+$user = '{wuser}'
+$sshDir = "C:\Users\$user\.ssh"
+New-Item -ItemType Directory -Force $sshDir | Out-Null
+$keyPath = "$sshDir\id_cachyos"
+[IO.File]::WriteAllBytes($keyPath, [Convert]::FromBase64String('{priv_b64}'))
+icacls $keyPath /inheritance:r /grant:r "${{user}}:F" "SYSTEM:F" | Out-Null
+if ('{kh_b64}') {{
+  $kh = "$sshDir\known_hosts"
+  $entry = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{kh_b64}')).Trim()
+  $lines = if (Test-Path $kh) {{ Get-Content $kh }} else {{ @() }}
+  if ($lines -notcontains $entry) {{ Add-Content -Path $kh -Value $entry -Encoding Ascii }}
+}}
+$bat = "C:\Users\$user\LinuxTerminal.cmd"
+Set-Content -Path $bat -Encoding Ascii -Value "@echo off`r`nssh -i `"%USERPROFILE%\.ssh\id_cachyos`" {luser}@{HOST_BRIDGE_IP}"
+$sh = New-Object -ComObject WScript.Shell
+$lnk = $sh.CreateShortcut("C:\Users\$user\Desktop\Linux Terminal (CachyOS).lnk")
+$lnk.TargetPath = $bat; $lnk.IconLocation = "$env:SystemRoot\System32\shell32.dll,22"; $lnk.Save()
+""" + WIN_LAUNCH_PS + rf"""
+$wt = Get-Command wt.exe -EA 0
+$wtExe = if ($wt) {{ $wt.Source }} else {{ "$env:SystemDrive\Users\{wuser}\AppData\Local\Microsoft\WindowsApps\wt.exe" }}
+$sshArgs = 'ssh -i "' + $keyPath + '" {luser}@{HOST_BRIDGE_IP}'
+$cmd = if (Test-Path $wtExe) {{ '"' + $wtExe + '" --title "CachyOS Linux" ' + $sshArgs }} else {{ 'cmd.exe /k "' + $bat + '"' }}
+Write-Output (Start-InUserSession $user $cmd)
+"""
+    out = guest_ps(vm, ps)
+    if "NOSESSION" in out:
+        raise RuntimeError("No active Windows desktop session yet (log in to Windows first)")
+    return out.strip()
+
+
+def status():
+    cp = read_ini(CONF)
+    cm = cp.get("core", "coreMode", fallback="0")
+    mode = {"2": "local", "1": "mac"}.get(cm, "off")
+    running = subprocess.run(["pgrep", "-u", str(os.getuid()), "-x", "deskflow-core"],
+                             capture_output=True).returncode == 0
+    listening = False
+    if mode == "local":
+        ss = subprocess.run(["ss", "-tln"], capture_output=True, text=True).stdout
+        listening = ":24800 " in ss
+    return {
+        "mode": mode,
+        "side": saved_side(),
+        "remote_host": cp.get("client", "remoteHost", fallback=""),
+        "running": running,
+        "listening": listening,
+        "has_mac_backup": os.path.exists(MAC_CONF),
+        "windows_vm": active_win_vm(),
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="deskflow-mode")
+    sub = ap.add_subparsers(dest="cmd")
+    sub.add_parser("status")
+    lp = sub.add_parser("local")
+    lp.add_argument("--side", choices=tuple(OPPOSITE), default=saved_side())
+    lp.add_argument("--no-win-sync", action="store_true")
+    mp = sub.add_parser("mac")
+    mp.add_argument("--no-win-sync", action="store_true")
+    sub.add_parser("sync-windows")
+    sub.add_parser("win-terminal")
+    args = ap.parse_args()
+    cmd = args.cmd or "status"
+    try:
+        if cmd == "status":
+            print(json.dumps(status()))
+        elif cmd == "local":
+            set_local(args.side)
+            if args.no_win_sync:
+                win_msg = ""
+            else:
+                try:
+                    win_msg = sync_windows()
+                except RuntimeError as e:
+                    win_msg = f"host switched (Windows sync pending: {e})"
+            print(f"Deskflow local server active (nitro <-> windows [{args.side}])" + (f" · {win_msg}" if win_msg else ""))
+        elif cmd == "mac":
+            set_mac()
+            if args.no_win_sync:
+                win_msg = ""
+            else:
+                try:
+                    win_msg = sync_windows()
+                except RuntimeError as e:
+                    win_msg = f"host switched (Windows sync pending: {e})"
+            print("Deskflow switched back to Mac client" + (f" · {win_msg}" if win_msg else ""))
+        elif cmd == "sync-windows":
+            print(sync_windows())
+        elif cmd == "win-terminal":
+            print(open_win_terminal())
+    except Exception as e:
+        print(f"deskflow-mode: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
