@@ -50,6 +50,65 @@ def switching():
         return False
 
 
+def read_hdmi():
+    """GTX 1650 DRM connector, passthrough locks, udev tags, and whether gnome-shell opened card0."""
+    card = ""
+    for p in glob.glob("/sys/class/drm/card[0-9]*/device"):
+        try:
+            if os.path.basename(os.path.realpath(p)) == GTX:
+                card = os.path.basename(os.path.dirname(p))
+                break
+        except OSError:
+            pass
+    conns, tags_ignored = [], False
+    if card:
+        try:
+            udev = subprocess.run(["udevadm", "info", "-q", "property", "-p", f"/sys/class/drm/{card}"],
+                                  capture_output=True, text=True, timeout=3).stdout
+            for line in udev.splitlines():
+                if line.startswith("TAGS=") and "mutter-device-ignore" in line:
+                    tags_ignored = True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        for c in sorted(glob.glob(f"/sys/class/drm/{card}-*")):
+            try:
+                st = open(f"{c}/status").read().strip() == "connected"
+            except OSError:
+                continue
+            mode = ""
+            try:
+                mode = open(f"{c}/modes").readline().strip()
+            except OSError:
+                pass
+            conns.append((os.path.basename(c).removeprefix(f"{card}-"), st, mode))
+    locks = [
+        "/etc/udev/rules.d/63-gtx-no-gnome.rules",
+        "/etc/systemd/user/org.gnome.Shell@wayland.service.d/10-no-nvidia-egl.conf",
+        "/etc/environment.d/90-gtx-free.conf",
+        os.path.expanduser("~/.config/environment.d/90-gtx-free.conf"),
+    ]
+    locked = any(os.path.exists(f) for f in locks)
+    gs_open, gs_mesa = False, False
+    try:
+        pids = subprocess.run(["pgrep", "-u", str(os.getuid()), "-x", "gnome-shell"],
+                              capture_output=True, text=True, timeout=3).stdout.split()
+        if pids:
+            pid = pids[0]
+            for fd in glob.glob(f"/proc/{pid}/fd/*"):
+                try:
+                    if card and os.readlink(fd) == f"/dev/dri/{card}":
+                        gs_open = True
+                        break
+                except OSError:
+                    pass
+            gs_mesa = b"__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json" in open(
+                f"/proc/{pid}/environ", "rb").read()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return {"card": card, "conns": conns, "locked": locked, "tags_ignored": tags_ignored,
+            "gs_open": gs_open, "gs_mesa": gs_mesa}
+
+
 def read_state():
     s = {"running": set(), "igpu": drv(IGPU), "gtx": drv(GTX), "busy": switching(), "lg": False, "log": ""}
     try:
@@ -59,6 +118,7 @@ def read_state():
         pass
     s["apps"] = app_windows_open()
     s["net"] = read_net()
+    s["hdmi"] = read_hdmi()
     s["lg"] = subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "looking-glass-client"],
                              capture_output=True).returncode == 0
     try:
@@ -211,8 +271,10 @@ class Win(Adw.ApplicationWindow):
         box.append(lbl)
         self.win = OsCard("input-gaming-symbolic", "Windows")
         self.mac = OsCard("video-display-symbolic", "macOS")
+        self.hdmi = OsCard("video-joined-displays-symbolic", "External HDMI")
         box.append(self.win)
         box.append(self.mac)
+        box.append(self.hdmi)
         # Opt-in: the Apple Wi-Fi + Bluetooth go to macOS (Continuity, Universal Control). Experimental.
         rb = Gtk.Box(spacing=10, margin_top=2)
         rl = Gtk.Label(xalign=0, hexpand=True, wrap=True,
@@ -282,12 +344,20 @@ class Win(Adw.ApplicationWindow):
         win_on, mac_on = "win10-gpu" in run, "macos-igpu" in run
         busy = s["busy"]
 
+        hdmi = s.get("hdmi", {})
+        hdmi_locked = hdmi.get("locked", True)
+        hdmi_live = (not hdmi_locked and not hdmi.get("tags_ignored") and not hdmi.get("gs_mesa")
+                     and s.get("gtx") == "nvidia" and (hdmi.get("gs_open") or bool(hdmi.get("card"))))
+
         # hero
         if mac_on:
             icon, title, sub = "video-display-symbolic", "macOS has the laptop screen", "Apple menu > Shut Down to come back."
         elif win_on:
             icon, title = "input-gaming-symbolic", "Linux, with Windows running"
-            sub = "Windows uses the GTX 1650. Right Ctrl grabs or releases the keyboard and mouse."
+            sub = "Windows uses the GTX 1650 (and HDMI port). Right Ctrl grabs or releases the keyboard and mouse."
+        elif hdmi_live:
+            icon, title = "video-joined-displays-symbolic", "Linux (External HDMI enabled)"
+            sub = "No virtual machine is running. Linux drives the laptop screen and external HDMI."
         else:
             icon, title, sub = "computer-symbolic", "Linux", "No virtual machine is running. GTX 1650 and laptop screen belong to Linux."
         if busy:
@@ -312,9 +382,11 @@ class Win(Adw.ApplicationWindow):
                 self.synced = True
                 self.sync_apps()
         else:
-            blocked = "win10" in run
-            self.win.set_state("Off", "off", "Runs in a window here, with the GTX 1650 for games and apps. "
-                               "About 30 s to start." if not blocked else "Shut down “Windows install / rescue” first (same disk).")
+            blocked = ("Shut down “Windows install / rescue” first (same disk)." if "win10" in run else
+                       "External HDMI is active on Linux. Switch External HDMI to Windows mode below first."
+                       if not hdmi_locked else "")
+            self.win.set_state("Off", "off", blocked or "Runs in a window here, with the GTX 1650 for games and apps. "
+                               "About 30 s to start.")
             self.win.set_buttons([("Start Windows", "suggested-action", None if blocked else self.win_start)])
 
         if not win_on:
@@ -334,6 +406,44 @@ class Win(Adw.ApplicationWindow):
             self.mac.set_state("Off", "off", why or "Full screen on the laptop panel, with graphics acceleration. "
                                "The Linux desktop closes while macOS runs.")
             self.mac.set_buttons([("Start on laptop screen", "suggested-action", None if why else self.mac_start)])
+
+        # External HDMI card (GTX 1650 HDMI output <-> Windows passthrough mode)
+        hp = self.pending.get("hdmi")
+        conns = hdmi.get("conns", [])
+        conn_on = [(n, m) for n, up, m in conns if up]
+        conn_desc = ", ".join(f"{n} ({m})" if m else n for n, m in conn_on)
+        if busy or hp:
+            self.hdmi.set_state(hp or "Switching", "busy", "Please wait…")
+            self.hdmi.set_buttons([("Working…", None, None)])
+        elif mac_on:
+            self.hdmi.set_state("Off", "off", "macOS has the laptop screen.")
+            self.hdmi.set_buttons([("Connect external HDMI", None, None)])
+        elif win_on:
+            self.hdmi.set_state("With Windows", "off",
+                                "Windows currently owns the GTX 1650 and HDMI port. Use Windows Display settings, or shut down Windows to drive HDMI on Linux.")
+            self.hdmi.set_buttons([("Stop Windows & connect HDMI", None, lambda: self.hdmi_enable(stop_win=True))])
+        elif hdmi_live:
+            self.hdmi.set_state("Active" if conn_on else "Ready", "on",
+                                f"Connected: {conn_desc} — Linux drives external HDMI." if conn_on else
+                                "GTX 1650 is unlocked for Linux HDMI (no monitor plugged in right now).")
+            self.hdmi.set_buttons([
+                ("Display settings", "suggested-action",
+                 lambda: self.launch(["gnome-control-center", "display"], "GNOME Settings is not installed")),
+                ("Switch to Windows mode", None, self.hdmi_disable),
+            ])
+        elif not hdmi_locked:
+            self.hdmi.set_state("Relogin needed", "busy",
+                                (f"Detected {conn_desc}. " if conn_on else "") +
+                                "Restart desktop login once so GNOME opens the GTX 1650 for HDMI.")
+            self.hdmi.set_buttons([
+                ("Apply HDMI now", "suggested-action", lambda: self.hdmi_enable(stop_win=False)),
+                ("Back to Windows mode", None, self.hdmi_disable),
+            ])
+        else:
+            self.hdmi.set_state("VM mode", "off",
+                                "HDMI monitor plugged in, but reserved for Windows passthrough (`win-gpu`)." if conn_on else
+                                "HDMI port is reserved for Windows passthrough so Windows starts without logging out.")
+            self.hdmi.set_buttons([("Connect external HDMI", "suggested-action", lambda: self.hdmi_enable(stop_win=False))])
 
         # plain VMs
         for vm, (row, pill, view, act) in self.rows.items():
@@ -507,6 +617,27 @@ class Win(Adw.ApplicationWindow):
                  "Force back", Adw.ResponseAppearance.DESTRUCTIVE,
                  lambda: self.run(["pkexec", GPU_MODE, "host"], "macos-igpu", "Stopping",
                                   "Back on Linux", "Failed"))
+
+    def hdmi_enable(self, stop_win=False):
+        msg = ("The Linux desktop restarts so GNOME attaches to the GTX 1650 HDMI port — "
+               "open Linux apps will close, so save your work first.\n\n"
+               + ("Windows will also shut down cleanly first.\n\n" if stop_win else "")
+               + "Log back in and external HDMI appears in Settings → Displays.")
+        def go():
+            if stop_win:
+                subprocess.run(["pkill", "-u", str(os.getuid()), "-f", "looking-glass-client|xfreerdp3 .*/app:"])
+            self.run(["pkexec", GPU_MODE, "hdmi-on-bg"] + (["--stop-win"] if stop_win else []),
+                     "hdmi", "Switching", "Restarting desktop for HDMI…", "HDMI switch failed")
+        self.ask("Connect external HDMI on Linux?", msg, "Connect HDMI", Adw.ResponseAppearance.SUGGESTED, go)
+
+    def hdmi_disable(self):
+        self.ask("Switch back to Windows passthrough mode?",
+                 "The Linux desktop restarts so GNOME releases the GTX 1650 — "
+                 "open Linux apps will close, so save your work first.\n\n"
+                 "After logging back in, external HDMI is disabled on Linux so Windows can start without logout.",
+                 "Switch to VM mode", Adw.ResponseAppearance.SUGGESTED,
+                 lambda: self.run(["pkexec", GPU_MODE, "hdmi-off-bg"],
+                                  "hdmi", "Switching", "Restarting desktop for VM mode…", "Switch failed"))
 
     def toggle_plain(self, vm):
         if vm in (self.state or {}).get("running", set()):

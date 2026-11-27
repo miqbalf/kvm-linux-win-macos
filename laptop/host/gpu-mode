@@ -8,6 +8,8 @@
 #   sudo gpu-mode host     stop macos-igpu, give the iGPU back to i915, start GDM
 #   sudo gpu-mode win      give the GTX 1650 to win10-gpu (Linux keeps the panel; view: looking-glass-client)
 #   sudo gpu-mode win-off  stop win10-gpu, GTX 1650 back to nvidia
+#   sudo gpu-mode hdmi-on [--restart] [--stop-win]   enable external HDMI on CachyOS GNOME (reloads GDM on --restart)
+#   sudo gpu-mode hdmi-off [--restart]               re-enable GNOME GTX isolation for `win-gpu`
 #   sudo gpu-mode status
 #   sudo gpu-mode new-overlay  discard the macOS VM disk overlay (done automatically by `mac` after a native boot)
 #   Apple menu > Shut Down in macOS also returns to the host (libvirt hook + watchdog).
@@ -215,9 +217,10 @@ vtcon() { for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" "$v/na
 [ "$(id -u)" = 0 ] || die "run with sudo"
 # One switch at a time (the libvirt hook also runs `gpu-mode host` when macos-igpu stops).
 [ "${1:-}" = watchdog ] && { watchdog; exit 0; }
-# mac-bg: same as `mac`, but as its own system unit, so the switch survives the end of the desktop
-# session that started it (the VM Switch app runs inside GNOME, which `mac` stops).
+# mac-bg / hdmi-*-bg: run as their own system unit so the switch survives the end of the GNOME session.
 [ "${1:-}" = mac-bg ] && exec systemd-run -q --collect --unit=gpu-mode-switch /usr/local/sbin/gpu-mode mac "${@:2}"
+[ "${1:-}" = hdmi-on-bg ] && exec systemd-run -q --collect --unit=gpu-mode-hdmi /usr/local/sbin/gpu-mode hdmi-on --restart "${@:2}"
+[ "${1:-}" = hdmi-off-bg ] && exec systemd-run -q --collect --unit=gpu-mode-hdmi /usr/local/sbin/gpu-mode hdmi-off --restart "${@:2}"
 exec 9>/run/gpu-mode.lock
 flock -w 300 9 || die "another gpu-mode is still running"
 
@@ -271,7 +274,7 @@ to_win() {
     for m in $NV_MODS; do
       lsmod | grep -q "^$m " || continue
       # rmmod, not modprobe -r: modprobe also tries to drop shared deps (i915) and then reports failure
-      rmmod $m 2>/dev/null || { gtx_to_host; die "cannot unload $m (still in use; was GNOME restarted after installing 63-gtx-no-gnome.rules?)"; }
+      rmmod $m 2>/dev/null || { gtx_to_host; die "cannot unload $m (still in use — if Linux HDMI is active, switch External HDMI back to Windows passthrough mode first)"; }
     done
     modprobe vfio-pci
     # audio first (it keeps snd_hda_intel after nvidia is gone), then GPU, then audio to vfio
@@ -297,6 +300,144 @@ to_win_off() {
   fi
   [ "$(pdrv $GTX)" = vfio-pci ] && gtx_to_host
   true
+}
+
+HDMI_UDEV=/etc/udev/rules.d/63-gtx-no-gnome.rules
+HDMI_DROPIN=/etc/systemd/user/org.gnome.Shell@wayland.service.d/10-no-nvidia-egl.conf
+HDMI_SYS_ENV=/etc/environment.d/90-gtx-free.conf
+
+hdmi_user() {
+  local u="${DESKTOP_USER:-}"
+  [ -n "$u" ] || u=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3!="gdm"&&$3!="root"&&$3!=""{print $3;exit}')
+  printf '%s' "$u"
+}
+
+hdmi_wait_gtx_free() {
+  local tries=$1 card devs i
+  card=$(ls -d /sys/bus/pci/devices/$GTX/drm/card[0-9]* 2>/dev/null | head -1)
+  devs=(/dev/nvidia*)
+  [ -n "$card" ] && [ -e "/dev/dri/${card##*/}" ] && devs+=("/dev/dri/${card##*/}")
+  for i in $(seq 1 "$tries"); do
+    fuser -s "${devs[@]}" 2>/dev/null || return 0
+    sleep 1
+  done
+  return 1
+}
+
+hdmi_user_env() {
+  local u="$1" uid bus
+  shift
+  [ -n "$u" ] || return 0
+  uid=$(id -u "$u" 2>/dev/null || true)
+  bus="/run/user/$uid/bus"
+  if [ -n "$uid" ] && [ -S "$bus" ]; then
+    runuser -u "$u" -- env "XDG_RUNTIME_DIR=/run/user/$uid" "DBUS_SESSION_BUS_ADDRESS=unix:path=$bus" systemctl --user "$@" 2>/dev/null || true
+  else
+    systemctl --user -M "$u@" "$@" 2>/dev/null || true
+  fi
+}
+
+hdmi_reload_drm() {
+  local tries=${1:-1} m
+  [ "$(pdrv $GTX)" = nvidia ] || return 0
+  gtx_pin_power on
+  systemctl stop nvidia-powerd 2>/dev/null || true
+  if ! hdmi_wait_gtx_free "$tries"; then
+    local card devs
+    card=$(ls -d /sys/bus/pci/devices/$GTX/drm/card[0-9]* 2>/dev/null | head -1)
+    devs=(/dev/nvidia*)
+    [ -n "$card" ] && [ -e "/dev/dri/${card##*/}" ] && devs+=("/dev/dri/${card##*/}")
+    log "GTX held open by: $(fuser -v "${devs[@]}" 2>&1 | tail -n +2 | tr -s ' ' | tr '\n' ' '); skipping nvidia_drm reload"
+    gtx_pin_power auto
+    systemctl start nvidia-powerd 2>/dev/null || true
+    return 1
+  fi
+  for m in $NV_MODS; do
+    lsmod | grep -q "^$m " || continue
+    rmmod "$m" 2>/dev/null || { gtx_to_host; log "WARN: could not unload $m for udev refresh"; return 1; }
+  done
+  gtx_to_host
+  udevadm settle 2>/dev/null || true
+  return 0
+}
+
+hdmi_restore_locks() {
+  if [ -e "${HDMI_UDEV}.disabled" ]; then mv -f "${HDMI_UDEV}.disabled" "$HDMI_UDEV"
+  elif [ ! -e "$HDMI_UDEV" ]; then
+    cat > "$HDMI_UDEV" <<'EOF'
+# GNOME (mutter) never drives the GTX 1650 (01:00.0), so it can go to the Windows VM without a logout.
+# Cost: Linux shows nothing on the HDMI port (wired to the GTX). CUDA / PRIME offload still work while
+# Windows is off. Takes effect after the next GNOME login.
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", KERNELS=="0000:01:00.0", TAG+="mutter-device-ignore"
+EOF
+  fi
+  chmod 644 "$HDMI_UDEV"
+  mkdir -p "$(dirname "$HDMI_DROPIN")" "$(dirname "$HDMI_SYS_ENV")"
+  if [ -e "${HDMI_DROPIN}.disabled" ]; then mv -f "${HDMI_DROPIN}.disabled" "$HDMI_DROPIN"
+  elif [ ! -e "$HDMI_DROPIN" ]; then
+    cat > "$HDMI_DROPIN" <<'EOF'
+[Service]
+Environment=__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+EOF
+  fi
+  chmod 644 "$HDMI_DROPIN"
+  if [ -e "${HDMI_SYS_ENV}.disabled" ]; then mv -f "${HDMI_SYS_ENV}.disabled" "$HDMI_SYS_ENV"
+  elif [ ! -e "$HDMI_SYS_ENV" ]; then
+    cat > "$HDMI_SYS_ENV" <<'EOF'
+__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.json
+EOF
+  fi
+  chmod 644 "$HDMI_SYS_ENV"
+}
+
+to_hdmi_on() {
+  local u h uenv f
+  if [ "$(state $WVM)" = running ]; then
+    [ "$HDMI_STOP_WIN" = 1 ] || die "Windows ($WVM) owns the GTX 1650; shut down Windows first"
+    to_win_off
+  fi
+  u=$(hdmi_user); h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6 || true)
+  uenv=${h:+"$h/.config/environment.d/90-gtx-free.conf"}
+  for f in "$HDMI_UDEV" "$HDMI_DROPIN" "$HDMI_SYS_ENV" ${uenv:+"$uenv"}; do
+    [ -e "$f" ] && mv -f "$f" "${f}.disabled"
+  done
+  hdmi_user_env "$u" unset-environment __EGL_VENDOR_LIBRARY_FILENAMES VK_DRIVER_FILES
+  udevadm control --reload
+  if [ "$HDMI_RESTART" = 1 ]; then
+    log "enabling Linux HDMI (restarting GDM and nvidia_drm)"
+    trap 'systemctl start gdm 2>/dev/null || true' EXIT
+    systemctl stop gdm; sleep 1
+    hdmi_reload_drm 15 || true
+    systemctl start gdm; trap - EXIT
+    log "Linux HDMI ready (GDM restarted; log in to use external display)"
+  else
+    hdmi_reload_drm 1 || true
+    log "Linux HDMI locks removed (log out and back in to attach GNOME to HDMI)"
+  fi
+}
+
+to_hdmi_off() {
+  local u h uenv
+  u=$(hdmi_user); h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6 || true)
+  uenv=${h:+"$h/.config/environment.d/90-gtx-free.conf"}
+  hdmi_restore_locks
+  [ -n "$uenv" ] && [ -e "$uenv" ] && mv -f "$uenv" "${uenv}.disabled"
+  hdmi_user_env "$u" set-environment \
+    __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json \
+    VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.json
+  udevadm control --reload
+  if [ "$HDMI_RESTART" = 1 ]; then
+    log "restoring Windows passthrough mode (restarting GDM)"
+    trap 'systemctl start gdm 2>/dev/null || true' EXIT
+    systemctl stop gdm; sleep 1
+    hdmi_reload_drm 15 || true
+    systemctl start gdm; trap - EXIT
+    log "Windows passthrough mode ready (GDM restarted; GNOME off GTX)"
+  else
+    udevadm trigger --action=add --subsystem-match=drm 2>/dev/null || true
+    log "Windows passthrough locks restored (log out and back in before win-gpu)"
+  fi
 }
 
 to_mac() {
@@ -388,10 +529,11 @@ to_host() {
   to_host_hw
 }
 
-RADIOS=off; DISK=overlay
+RADIOS=off; DISK=overlay; HDMI_RESTART=0; HDMI_STOP_WIN=0
 for a in "${@:2}"; do
   case "$a" in
     --radios) RADIOS=on ;; --wifi) RADIOS=wifi ;; --overlay) DISK=overlay ;; --nvme) DISK=nvme ;;
+    --restart) HDMI_RESTART=1 ;; --stop-win) HDMI_STOP_WIN=1 ;;
     *) echo "unknown option $a"; exit 2 ;;
   esac
 done
@@ -400,10 +542,12 @@ case "${1:-status}" in
   host) to_host; status ;;
   win) to_win; status ;;
   win-off) to_win_off; status ;;
+  hdmi-on) to_hdmi_on; status ;;
+  hdmi-off) to_hdmi_off; status ;;
   status) status ;;
   net-backup) net_backup ;;
   new-overlay)
     [ "$(state $VM)" = "shut off" ] && [ "$(state macos)" = "shut off" ] || die "shut down the macOS VMs first"
     new_overlay ;;
-  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|status|new-overlay|net-backup  (mac/mac-bg [--radios|--wifi] [--nvme])"; exit 2 ;;
+  *) echo "usage: gpu-mode mac|mac-bg|host|win|win-off|hdmi-on|hdmi-on-bg|hdmi-off|hdmi-off-bg|status|new-overlay|net-backup"; exit 2 ;;
 esac

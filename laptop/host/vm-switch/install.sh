@@ -8,9 +8,12 @@ pacman -S --needed --noconfirm python-gobject gtk4 libadwaita >/dev/null
 # VNC viewer for the "macOS in a window" / "Windows install" VMs. Optional: a bad mirror must not stop the install.
 pacman -S --needed --noconfirm gnome-connections >/dev/null 2>&1 \
   || echo "WARN: gnome-connections not installed (mirror error?). Later: sudo pacman -Syu gnome-connections"
-install -m 755 laptop/host/gpu-mode /usr/local/sbin/gpu-mode          # has the mac-bg mode the app uses
+install -m 755 laptop/host/gpu-mode /usr/local/sbin/gpu-mode          # has the mac-bg / hdmi-*-bg modes the app uses
+install -m 755 laptop/host/linux-hdmi /usr/local/bin/linux-hdmi
 install -m 755 laptop/host/win-gpu /usr/local/bin/win-gpu
-install -D -m 644 laptop/host/session/90-gtx-free.conf /etc/environment.d/90-gtx-free.conf
+if [ ! -e /etc/environment.d/90-gtx-free.conf.disabled ]; then
+  install -D -m 644 laptop/host/session/90-gtx-free.conf /etc/environment.d/90-gtx-free.conf
+fi
 install -m 755 laptop/host/gtx-run /usr/local/bin/gtx-run
 # Apply to the running session too (new apps and restarted services); a log out/in applies it everywhere.
 [ -n "${SUDO_USER:-}" ] && sudo -u "$SUDO_USER" XDG_RUNTIME_DIR=/run/user/$(id -u "$SUDO_USER") systemctl --user daemon-reload 2>/dev/null || true

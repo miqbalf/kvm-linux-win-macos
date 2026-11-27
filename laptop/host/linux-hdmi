@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# CLI wrapper for CachyOS external HDMI mode (/usr/local/sbin/gpu-mode hdmi-on|hdmi-off).
+set -euo pipefail
+
+GTX="0000:01:00.0"
+WVM="win10-gpu"
+LOCKS=(
+    /etc/udev/rules.d/63-gtx-no-gnome.rules
+    /etc/systemd/user/org.gnome.Shell@wayland.service.d/10-no-nvidia-egl.conf
+    /etc/environment.d/90-gtx-free.conf
+)
+
+usage() {
+    cat <<'EOF'
+Usage: linux-hdmi <on|off|status> [options]
+
+Commands:
+  on       Enable external HDMI on CachyOS GNOME (disables GTX passthrough locks)
+  off      Re-enable GNOME isolation so `win-gpu` / `gpu-mode win` can hot-swap GTX
+  status   Show live HDMI connector, GPU driver, udev tags, and GNOME session state
+
+Options (for on/off):
+  --restart   Restart GDM right away (closes open GUI apps) to apply immediately
+  --stop-win  Stop running win10-gpu VM first when enabling HDMI
+  -h, --help  Show help
+EOF
+}
+
+pdrv() {
+    local l
+    l="$(readlink "/sys/bus/pci/devices/$1/driver" 2>/dev/null || true)"
+    [[ -n "$l" ]] && basename "$l" || echo "none"
+}
+
+find_card() {
+    local d
+    for d in /sys/class/drm/card[0-9]*; do
+        [[ -e "$d/device" ]] || continue
+        if [[ "$(basename "$(readlink -f "$d/device")")" == "$GTX" ]]; then
+            basename "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+show_status() {
+    local drv card tags conn st gs_pid egl_env
+    drv="$(pdrv "$GTX")"
+    card="$(find_card || echo "none")"
+    echo "=== Linux HDMI / GTX 1650 Status (user: ${USER:-$(id -un)}) ==="
+    echo "GTX ($GTX) driver : $drv (DRM: $card)"
+    echo "win10-gpu VM        : $(virsh -c qemu:///system domstate "$WVM" 2>/dev/null || echo unknown)"
+    for f in "${LOCKS[@]}" "$HOME/.config/environment.d/90-gtx-free.conf"; do
+        if [[ -e "$f" ]]; then
+            echo "Passthrough lock ON : $f"
+        elif [[ -e "${f}.disabled" ]]; then
+            echo "Passthrough lock OFF: $f (.disabled)"
+        else
+            echo "Passthrough lock OFF: $f (absent)"
+        fi
+    done
+    if [[ "$card" != "none" ]]; then
+        tags="$(udevadm info -q property -p "/sys/class/drm/$card" 2>/dev/null | awk -F= '/^TAGS=/{print $2}' || true)"
+        echo "card TAGS           : ${tags:-none}"
+        for conn in "/sys/class/drm/${card}"-*; do
+            [[ -e "$conn/status" ]] || continue
+            st="$(cat "$conn/status" 2>/dev/null || echo unknown)"
+            echo "Connector $(basename "$conn"): $st ($(head -n 1 "$conn/modes" 2>/dev/null || echo no-mode))"
+        done
+    fi
+    gs_pid="$(pgrep -u "$(id -u)" -x gnome-shell 2>/dev/null | head -n 1 || true)"
+    if [[ -n "$gs_pid" ]]; then
+        egl_env="$(tr '\0' '\n' < "/proc/$gs_pid/environ" 2>/dev/null | grep -E '^(__EGL_VENDOR_LIBRARY_FILENAMES|VK_DRIVER_FILES)=' | paste -sd ', ' - || true)"
+        echo "gnome-shell ($gs_pid) env : ${egl_env:-unrestricted (NVIDIA+Intel)}"
+    fi
+}
+
+cmd="${1:-status}"
+shift || true
+case "$cmd" in
+    -h|--help) usage ;;
+    status) show_status ;;
+    on) exec sudo /usr/local/sbin/gpu-mode hdmi-on "$@" ;;
+    off) exec sudo /usr/local/sbin/gpu-mode hdmi-off "$@" ;;
+    *) echo "Unknown command: $cmd" >&2; usage; exit 2 ;;
+esac

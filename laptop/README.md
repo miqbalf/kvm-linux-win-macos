@@ -14,7 +14,7 @@ is shared with it.
 ## Apps (no terminal needed)
 | App (app grid) | What | Install |
 |---|---|---|
-| **VM Switch** | See what runs; buttons to start/stop Windows on the GTX, macOS on the laptop screen, the VNC VMs; Windows desktop, or Windows apps as Linux windows (Coherence-style, app grid folder "Windows") | `sudo bash laptop/host/vm-switch/install.sh` |
+| **VM Switch** | See what runs; buttons to start/stop Windows on the GTX, macOS on the laptop screen, **External HDMI** toggle (Linux HDMI vs Windows VM passthrough), the VNC VMs, Windows desktop, or Windows apps (Coherence-style) | `sudo bash laptop/host/vm-switch/install.sh` |
 | **Nitro Control** | Fans (auto / max / custom), 4-zone keyboard RGB and effects, 80% battery limit, live RPM and temps | `sudo bash laptop/host/nitrosense/install.sh` |
 | **Windows (GTX 1650)** | Starts Windows and opens its window in one click | part of `01-host-setup.sh` |
 
@@ -34,6 +34,7 @@ The first GPU switch asks for your password; it is remembered for a few minutes.
 | Linux | macOS | `sudo gpu-mode mac` (Linux desktop closes) | 60-100 s |
 | macOS | Linux | Apple menu > Shut Down (or `ssh <user>@<laptop> sudo gpu-mode host`) | about 1 min |
 | macOS | Windows | go back to Linux first, then `win-gpu` | |
+| Linux VM mode | Linux HDMI | **VM Switch > Connect external HDMI** or `linux-hdmi on --restart` (restores via `linux-hdmi off --restart`) | ~3 s (re-login) |
 | anything stuck | Linux | hold the power button; every boot starts in Linux | |
 
 Fans / RGB: app grid > **Nitro Control**, or `nitro fan max`, `nitro rgb red`, `nitro effect breath red`.
@@ -60,7 +61,8 @@ Status of everything: `sudo gpu-mode status`. Log: `journalctl -t gpu-mode`.
 | Path | What |
 |---|---|
 | `host/00-inspect.sh`, `01-host-setup.sh`, `02-verify.sh` | read-only report, setup, health check |
-| `host/gpu-mode` | the switch: `mac`, `host`, `win`, `win-off`, `status` |
+| `host/gpu-mode` | the switch: `mac`, `host`, `win`, `win-off`, `hdmi-on`, `hdmi-off`, `status` |
+| `host/linux-hdmi` | CLI wrapper for `hdmi-on` / `hdmi-off` / `status` (`/usr/local/bin/linux-hdmi`) |
 | `host/vm-switch/` | VM Switch app (GTK4), polkit rule for `gpu-mode`, installer |
 | `host/win-gpu`, `host/looking-glass/` | Windows launcher, menu entry, Looking Glass client build + config |
 | `host/touchpad-bridge` | touchpad as a tap-to-click mouse for macOS |

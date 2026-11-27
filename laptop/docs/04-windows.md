@@ -15,6 +15,7 @@ win-gpu stop     # shuts Windows down; the GTX goes back to Linux
   nothing in Linux holds the GTX. If `gpu-mode win` still names a program, close it (or log out and in once
   after installing). Run a Linux app on the GTX on purpose with `gtx-run <app>`; close it before Windows.
 - Same as `sudo gpu-mode win` / `sudo gpu-mode win-off`. Status: `sudo gpu-mode status`.
+- **External HDMI on Linux:** Because the HDMI port is wired to the GTX 1650 and GNOME ignores the GTX in Windows-ready mode (`host/udev/63-gtx-no-gnome.rules`), use **VM Switch → Connect external HDMI** (or `linux-hdmi on --restart`) to switch the GTX + GNOME onto external HDMI, and **Switch to Windows mode** (`linux-hdmi off --restart`) before starting `win-gpu` again.
 - Run PowerShell in the guest from Linux: `wexec win10-gpu 'Get-Date'` (QEMU guest agent).
 - RDP also works: 192.168.122.13.
 - Mac keyboard and mouse in Windows: Deskflow client inside Windows (docs/08), not through the Looking Glass window.
